@@ -1,0 +1,16 @@
+export const COMMUNE_AVG_PRICE_PSM: Record<string, number> = {
+  "Luxembourg (Ville)": 13500,
+  Kirchberg: 14500,
+  Belair: 15000,
+  Limpertsberg: 14800,
+  "Gare": 12500,
+  Gasperich: 13200,
+  "Merl": 14000,
+  Strassen: 12000,
+  Bertrange: 11800,
+  Hesperange: 11000,
+  "Mamer": 10500,
+  "Esch-sur-Alzette": 7800,
+  "Differdange": 7200,
+  "Dudelange": 7600,
+};
