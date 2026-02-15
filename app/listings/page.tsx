@@ -4,6 +4,16 @@ import { Separator } from "@/components/ui/separator";
 import { parseSearchQuery } from "@/lib/searchParser";
 import { dealScore } from "@/lib/scoring";
 
+const aliasMap: Record<string, string> = {
+  "luxembourg city": "Luxembourg (Ville)",
+  "lux city": "Luxembourg (Ville)",
+  "ville": "Luxembourg (Ville)",
+  "cloche dor": "Gasperich",
+  "cloche d’or": "Gasperich",
+  "cloche d'or": "Gasperich",
+};
+
+
 export default function ListingsPage({
   searchParams,
 }: {
@@ -12,11 +22,11 @@ export default function ListingsPage({
   const q = (searchParams.q ?? "").trim();
 
   const knownCommunes = Array.from(new Set(LISTINGS.map((l) => l.commune)));
-  const parsed = q ? parseSearchQuery(q, knownCommunes) : {};
+  const parsed = q ? parseSearchQuery(q, knownCommunes, aliasMap) : {};
 
   const filtered = LISTINGS.filter((l) => {
     if (parsed.commune && l.commune !== parsed.commune) return false;
-    if (parsed.bedrooms != null && l.bedrooms !== parsed.bedrooms) return false;
+    if (parsed.bedrooms != null && l.bedrooms < parsed.bedrooms) return false;
     if (parsed.minPrice != null && l.price < parsed.minPrice) return false;
     if (parsed.maxPrice != null && l.price > parsed.maxPrice) return false;
     if (parsed.minSqm != null && l.sizeSqm < parsed.minSqm) return false;
