@@ -5,8 +5,32 @@ import { getListingById } from "@/lib/repos/listingsRepo";
 import type { Listing } from "@/lib/mockData";
 import { LeadCaptureForm } from "@/app/components/LeadCaptureForm";
 
+type ListingMediaRow = {
+  url: string;
+  sortOrder: number | null;
+};
 
-function mapDbToUi(row: any): Listing {
+type AgencyRow = {
+  name: string | null;
+};
+
+type ListingDbRow = {
+  id: string;
+  title: string;
+  commune: string;
+  addressHint: string | null;
+  price: number;
+  sizeSqm: number;
+  bedrooms: number;
+  bathrooms: number;
+  condition: "TO_RENOVATE" | "NEW" | "RENOVATED" | "GOOD" | string;
+  energyClass: string;
+  createdAt: Date;
+  media?: ListingMediaRow[] | null;
+  agency?: AgencyRow | null;
+};
+
+function mapDbToUi(row: ListingDbRow): Listing {
   return {
     id: row.id,
     title: row.title,
@@ -27,10 +51,10 @@ function mapDbToUi(row: any): Listing {
     energyClass: row.energyClass,
     images: (row.media ?? [])
       .slice()
-      .sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      .map((m: any) => m.url),
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map((m) => m.url),
     agencyName: row.agency?.name ?? "Marketplace",
-    createdAt: row.createdAt?.toISOString?.() ?? new Date().toISOString(),
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -49,7 +73,9 @@ export default async function ListingDetail({
 }) {
   const { id } = await params;
 
-  const row = await getListingById(id);
+  // IMPORTANT: getListingById must include media relation (ListingMedia) in its query.
+  // Your UI already reads row.media, so we just rely on that.
+  const row = (await getListingById(id)) as ListingDbRow | null;
   if (!row) return notFound();
 
   const listing = mapDbToUi(row);
@@ -78,7 +104,7 @@ export default async function ListingDetail({
           {listing.images.map((src, i) => (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={i}
+              key={`${src}-${i}`}
               src={src}
               alt=""
               className="w-full h-64 object-cover rounded-md border"
@@ -126,11 +152,12 @@ export default async function ListingDetail({
         <h2 className="font-semibold text-lg">Deal Insights</h2>
         <ul className="list-disc pl-5 text-muted-foreground">
           {s.reasons.map((r, i) => (
-            <li key={i}>{r}</li>
+            <li key={`${r}-${i}`}>{r}</li>
           ))}
         </ul>
       </section>
-       <LeadCaptureForm listingId={listing.id} agencyName={listing.agencyName} />
+
+      <LeadCaptureForm listingId={listing.id} agencyName={listing.agencyName} />
     </main>
   );
 }

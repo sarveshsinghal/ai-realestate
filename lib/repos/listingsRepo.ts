@@ -48,6 +48,6 @@ export async function searchPublishedListings(filters: ListingSearchFilters) {
 export async function getListingById(id: string) {
   return prisma.listing.findUnique({
     where: { id },
-    include: { media: true, agency: true },
+    include: { media: { orderBy: { sortOrder: "asc" } }, agency: true },
   });
 }
