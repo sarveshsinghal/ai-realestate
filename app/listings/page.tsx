@@ -1,37 +1,67 @@
-import { LISTINGS } from "@/lib/mockData";
 import { ListingCard } from "@/app/components/ListingCard";
 import { Separator } from "@/components/ui/separator";
 import { parseSearchQuery } from "@/lib/searchParser";
 import { dealScore } from "@/lib/scoring";
+import { getAllPublishedListings } from "@/lib/repos/listingsRepo";
+import type { Listing } from "@/lib/mockData";
+
 
 const aliasMap: Record<string, string> = {
   "luxembourg city": "Luxembourg (Ville)",
   "lux city": "Luxembourg (Ville)",
-  "ville": "Luxembourg (Ville)",
+  ville: "Luxembourg (Ville)",
   "cloche dor": "Gasperich",
   "cloche d’or": "Gasperich",
   "cloche d'or": "Gasperich",
 };
 
-
-export default function ListingsPage({
+export default async function ListingsPage({
   searchParams,
 }: {
-  searchParams: { q?: string };
+  searchParams: Promise<{ q?: string }>;
 }) {
-  const q = (searchParams.q ?? "").trim();
+  const sp = await searchParams;
+  const q = (sp.q ?? "").trim();
 
-  const knownCommunes = Array.from(new Set(LISTINGS.map((l) => l.commune)));
+  const dbListings = await getAllPublishedListings();
+
+  // Map DB -> UI model expected by ListingCard/scoring
+  const listings: Listing[] = dbListings.map((l) => ({
+    id: l.id,
+    title: l.title,
+    commune: l.commune,
+    addressHint: l.addressHint ?? undefined,
+    price: l.price,
+    sizeSqm: l.sizeSqm,
+    bedrooms: l.bedrooms,
+    bathrooms: l.bathrooms,
+    condition:
+    l.condition === "TO_RENOVATE"
+        ? "To renovate"
+        : l.condition === "NEW"
+        ? "New"
+        : l.condition === "RENOVATED"
+        ? "Renovated"
+        : "Good",
+    energyClass: l.energyClass,
+    images: l.media.sort((a, b) => a.sortOrder - b.sortOrder).map((m) => m.url),
+    agencyName: l.agency?.name ?? "Marketplace",
+    createdAt: l.createdAt.toISOString(),
+  }));
+
+  const knownCommunes = Array.from(new Set(listings.map((l) => l.commune)));
   const parsed = q ? parseSearchQuery(q, knownCommunes, aliasMap) : {};
 
-  const filtered = LISTINGS.filter((l) => {
-    if (parsed.commune && l.commune !== parsed.commune) return false;
-    if (parsed.bedrooms != null && l.bedrooms < parsed.bedrooms) return false;
-    if (parsed.minPrice != null && l.price < parsed.minPrice) return false;
-    if (parsed.maxPrice != null && l.price > parsed.maxPrice) return false;
-    if (parsed.minSqm != null && l.sizeSqm < parsed.minSqm) return false;
-    return true;
-  }).sort((a, b) => dealScore(b).score - dealScore(a).score);
+  const filtered = listings
+    .filter((l) => {
+      if (parsed.commune && l.commune !== parsed.commune) return false;
+      if (parsed.bedrooms != null && l.bedrooms < parsed.bedrooms) return false; // "at least"
+      if (parsed.minPrice != null && l.price < parsed.minPrice) return false;
+      if (parsed.maxPrice != null && l.price > parsed.maxPrice) return false;
+      if (parsed.minSqm != null && l.sizeSqm < parsed.minSqm) return false;
+      return true;
+    })
+    .sort((a, b) => dealScore(b).score - dealScore(a).score);
 
   return (
     <main className="min-h-screen">
