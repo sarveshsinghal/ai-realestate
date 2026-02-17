@@ -39,17 +39,48 @@ enum LeadStatus {
   LOST
 }
 
+enum ListingKind {
+  SALE
+  RENT
+}
+
+enum PropertyType {
+  APARTMENT
+  HOUSE
+  STUDIO
+  DUPLEX
+  PENTHOUSE
+  TOWNHOUSE
+  ROOM
+  OFFICE
+  RETAIL
+  WAREHOUSE
+  LAND
+  OTHER
+}
+
+enum HeatingType {
+  GAS
+  ELECTRIC
+  HEATPUMP
+  OIL
+  DISTRICT
+  WOOD
+  OTHER
+}
+
+
 model User {
-  id             String   @id @default(cuid())
+  id             String @id @default(cuid())
   // Link this to Supabase auth.users.id (uuid)
-  supabaseUserId String   @unique
+  supabaseUserId String @unique
 
-  email          String?
-  name           String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  email     String?
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  memberships    AgencyMember[]
+  memberships AgencyMember[]
 }
 
 model Agency {
@@ -59,26 +90,26 @@ model Agency {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members   AgencyMember[]
-  listings  Listing[]
-  leads     Lead[]
+  members  AgencyMember[]
+  listings Listing[]
+  leads    Lead[]
 }
 
 model AgencyMember {
-  id             String     @id @default(cuid())
-  agencyId        String
-  userId          String
+  id       String @id @default(cuid())
+  agencyId String
+  userId   String
 
   // Supabase auth user id (uuid) for scoping without joining User table
-  supabaseUserId  String
-  email           String
-  role            MemberRole @default(AGENT)
+  supabaseUserId String
+  email          String
+  role           MemberRole @default(AGENT)
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  agency          Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  user            User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([agencyId, userId])
   @@unique([agencyId, supabaseUserId])
@@ -87,32 +118,64 @@ model AgencyMember {
   @@index([supabaseUserId])
 }
 
-
 model Listing {
-  id          String   @id @default(cuid())
+  id String @id @default(cuid())
 
   // Public-facing fields
   title       String
   commune     String
   addressHint String?
-  price       Int      // EUR
+  price       Int // EUR
   sizeSqm     Int
   bedrooms    Int
   bathrooms   Int
   condition   ListingCondition
   energyClass EnergyClass
 
-  // Make nullable to allow seed/backfill before agency linkage (recommended)
-  agencyId    String?
-  agency      Agency?  @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  // ✅ NEW: content (critical)
+  description String? @db.Text
 
-  // Optional denormalized name (useful for seed/import + auto-link)
+  // ✅ NEW: sale vs rent + property type
+  kind         ListingKind   @default(SALE)
+  propertyType PropertyType  @default(APARTMENT)
+
+  // ✅ NEW: core “Lux consumer expectations”
+  availableFrom DateTime?
+  yearBuilt     Int?
+  floor         Int?
+  totalFloors   Int?
+  furnished     Boolean?     @default(false)
+  petsAllowed   Boolean?     @default(false)
+
+  // ✅ NEW: amenities + parking
+  hasElevator     Boolean? @default(false)
+  hasBalcony      Boolean? @default(false)
+  hasTerrace      Boolean? @default(false)
+  hasGarden       Boolean? @default(false)
+  hasCellar       Boolean? @default(false)
+  parkingSpaces   Int?     @default(0)
+
+  // ✅ NEW: energy & heating (Lux users filter by this)
+  heatingType   HeatingType?
+  chargesMonthly Int? // rent listings (EUR)
+  feesAgency     Int? // optional
+  deposit        Int? // optional
+
+  // ✅ NEW: optional geodata (future map search)
+  latitude   Float?
+  longitude  Float?
+
+  // Make nullable to allow seed/backfill before agency linkage
+  agencyId String?
+  agency   Agency? @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+
   agencyName  String?
+  searchIndex ListingSearchIndex?
 
   isPublished Boolean @default(true)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   media        ListingMedia[]
   priceHistory ListingPriceHistory[]
@@ -121,8 +184,14 @@ model Listing {
   @@index([commune])
   @@index([price])
   @@index([bedrooms])
+  @@index([bathrooms])
+  @@index([sizeSqm])
+  @@index([kind])
+  @@index([propertyType])
+  @@index([isPublished])
   @@index([agencyId])
 }
+
 
 model ListingMedia {
   id        String @id @default(cuid())
@@ -130,7 +199,7 @@ model ListingMedia {
   url       String
   sortOrder Int    @default(0)
 
-  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
   @@index([listingId])
 }
@@ -141,32 +210,60 @@ model ListingPriceHistory {
   price      Int
   recordedAt DateTime @default(now())
 
-  listing    Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
   @@index([listingId, recordedAt])
 }
 
 model Lead {
-  id        String   @id @default(cuid())
+  id String @id @default(cuid())
 
   // Make nullable to allow older leads / transitional data
   agencyId  String?
   listingId String?
 
-  name      String
-  email     String
-  phone     String?
-  message   String?
+  name    String
+  email   String
+  phone   String?
+  message String?
 
-  status    LeadStatus @default(NEW)
+  status LeadStatus @default(NEW)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  agency    Agency?  @relation(fields: [agencyId], references: [id], onDelete: SetNull)
-  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  agency  Agency?  @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  listing Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
 
   @@index([agencyId, createdAt])
   @@index([listingId])
   @@index([status])
 }
+
+model ListingSearchIndex {
+  listingId  String                 @id
+  agencyId   String
+  status     String
+  searchText String
+  embedding  Unsupported("vector(1536)")?
+  updatedAt  DateTime               @updatedAt
+
+  price        Int?
+  bedrooms     Int?
+  bathrooms    Int?
+  sizeSqm      Int?
+  kind         String?      // "SALE"/"RENT"
+  propertyType String?
+  commune      String?
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([agencyId])
+  @@index([status])
+  @@index([price])
+  @@index([bedrooms])
+  @@index([bathrooms])
+  @@index([sizeSqm])
+  @@index([commune])
+}
+

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAgencyContext } from "@/lib/requireAgencyContext";
 import { EnergyClass, ListingCondition } from "@prisma/client";
+import { indexListing } from "@/lib/search/indexListing"; // ✅ A4: add this import
 
 export const runtime = "nodejs";
 
@@ -44,8 +45,6 @@ function isEnumValue<T extends Record<string, string>>(
 function toListingCondition(v: unknown): ListingCondition {
   if (typeof v !== "string") return ListingCondition.GOOD;
   const candidate = v.trim().toUpperCase();
-  // Prisma enums are string unions; values match enum members in many setups.
-  // We'll only accept if it exists in the generated enum.
   return isEnumValue(ListingCondition, candidate)
     ? (candidate as ListingCondition)
     : ListingCondition.GOOD;
@@ -54,9 +53,6 @@ function toListingCondition(v: unknown): ListingCondition {
 function toEnergyClass(v: unknown): EnergyClass {
   if (typeof v !== "string") return EnergyClass.C;
   const candidate = v.trim().toUpperCase();
-
-  // Common case: enum values are "A".."G"
-  // If your enum differs, this still won’t crash; it will fall back to C.
   return isEnumValue(EnergyClass, candidate)
     ? (candidate as EnergyClass)
     : EnergyClass.C;
@@ -89,30 +85,47 @@ export async function POST(req: Request) {
   const energyClass = toEnergyClass(body.energyClass);
 
   try {
-    const listing = await prisma.listing.create({
-      data: {
-        agencyId: agency.id,
-        agencyName: agency.name ?? undefined,
-        title,
-        commune,
-        price,
-        sizeSqm,
-        bedrooms,
-        bathrooms,
-        condition,
-        energyClass,
-        isPublished: false,
-      },
-      select: { id: true, price: true },
+    // ✅ Use a transaction so Listing + PriceHistory are atomic
+    const { listingId } = await prisma.$transaction(async (tx) => {
+      const listing = await tx.listing.create({
+        data: {
+          agencyId: agency.id,
+          agencyName: agency.name ?? undefined,
+          title,
+          commune,
+          price,
+          sizeSqm,
+          bedrooms,
+          bathrooms,
+          condition,
+          energyClass,
+          isPublished: false,
+        },
+        select: { id: true },
+      });
+
+      await tx.listingPriceHistory.create({
+        data: { listingId: listing.id, price, recordedAt: new Date() },
+      });
+
+      return { listingId: listing.id };
     });
 
-    await prisma.listingPriceHistory.create({
-      data: { listingId: listing.id, price, recordedAt: new Date() },
-    });
+    // ✅ A4: index after commit (keeps search index consistent)
+    // If embeddings provider isn't set yet, indexListing will throw; you can choose:
+    // - let it fail loudly, or
+    // - swallow indexing failures so listing creation still succeeds.
+    try {
+      await indexListing(listingId);
+    } catch (e) {
+      console.error("indexListing failed", e);
+      // keep create listing successful even if indexing fails
+    }
 
-    return NextResponse.json({ id: listing.id });
+    return NextResponse.json({ id: listingId });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create listing";
+    const message =
+      err instanceof Error ? err.message : "Failed to create listing";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

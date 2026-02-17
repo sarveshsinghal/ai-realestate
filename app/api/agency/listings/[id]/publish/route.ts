@@ -1,9 +1,11 @@
+// app/api/agency/listings/[id]/publish/route.ts (or wherever this file lives)
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAgencyContext } from "@/lib/auth-server";
 import { MemberRole } from "@prisma/client";
+import { indexListing } from "@/lib/search/indexListing"; // ✅ A4: reindex on publish toggle
 
 export async function PATCH(
   req: Request,
@@ -25,11 +27,16 @@ export async function PATCH(
     // Ensure listing belongs to this agency
     const listing = await prisma.listing.findUnique({
       where: { id },
-      select: { id: true, agencyId: true },
+      select: { id: true, agencyId: true, isPublished: true },
     });
 
     if (!listing || listing.agencyId !== agency.id) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    // No-op if already same state
+    if (listing.isPublished === isPublished) {
+      return NextResponse.json({ id: listing.id, isPublished: listing.isPublished });
     }
 
     const updated = await prisma.listing.update({
@@ -37,6 +44,16 @@ export async function PATCH(
       data: { isPublished },
       select: { id: true, isPublished: true },
     });
+
+    // ✅ Reindex AFTER DB update succeeds
+    // - If published => embed + store vector
+    // - If unpublished => clear embedding (per indexListing logic)
+    try {
+      await indexListing(id);
+    } catch (e) {
+      console.error("indexListing failed after publish toggle:", e);
+      // Best-effort; don't fail publish UX
+    }
 
     return NextResponse.json(updated);
   } catch (e) {
