@@ -1,7 +1,48 @@
 // lib/search/indexListing.ts
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { buildListingSearchText } from "./buildListingSearchText";
 import { embedText } from "./embeddings";
+
+function normalizeEmbedding(input: unknown): number[] | null {
+  // Accept: number[] OR string[] OR string blob like '{ "0.1","0.2" }' OR '[0.1,0.2]'
+  let raw: unknown[] | null = null;
+
+  if (Array.isArray(input)) {
+    raw = input;
+  } else if (typeof input === "string") {
+    const s = input.trim();
+    const matches = s.match(/-?\d+(\.\d+)?([eE]-?\d+)?/g);
+    if (!matches) return null;
+    raw = matches;
+  } else if (input && typeof input === "object") {
+    // In case someone passes { vector: ... } or { embedding: ... }
+    const anyObj = input as any;
+    if (Array.isArray(anyObj.vector)) raw = anyObj.vector;
+    else if (Array.isArray(anyObj.embedding)) raw = anyObj.embedding;
+    else if (Array.isArray(anyObj.data?.[0]?.embedding)) raw = anyObj.data[0].embedding;
+    else if (Array.isArray(anyObj.data?.[0]?.vector)) raw = anyObj.data[0].vector;
+  }
+
+  if (!raw) return null;
+
+  const nums = raw
+    .map((x) => (typeof x === "number" ? x : typeof x === "string" ? Number(x) : NaN))
+    .filter((n) => Number.isFinite(n)) as number[];
+
+  // Must be exactly 1536 dims for your schema vector(1536)
+  if (nums.length !== 1536) return null;
+
+  // Sanity: embeddings should not contain huge outliers. This catches garbage like "2235".
+  if (nums.some((v) => Math.abs(v) > 5)) return null;
+
+  return nums;
+}
+
+function toPgVectorLiteral(vec: number[]) {
+  // pgvector accepts '[1,2,3]'::vector
+  return `[${vec.map((v) => (Number.isFinite(v) ? String(v) : "0")).join(",")}]`;
+}
 
 export async function indexListing(listingId: string) {
   const listing = await prisma.listing.findUnique({
@@ -13,12 +54,12 @@ export async function indexListing(listingId: string) {
       isPublished: true,
 
       title: true,
-      description: true, // ✅ NEW
+      description: true,
       commune: true,
       addressHint: true,
 
-      kind: true, // ✅ NEW
-      propertyType: true, // ✅ NEW
+      kind: true,
+      propertyType: true,
 
       price: true,
       sizeSqm: true,
@@ -28,7 +69,7 @@ export async function indexListing(listingId: string) {
       condition: true,
       energyClass: true,
 
-      // ✅ NEW amenities (optional but great for search)
+      // amenities
       furnished: true,
       petsAllowed: true,
       hasElevator: true,
@@ -38,7 +79,7 @@ export async function indexListing(listingId: string) {
       hasCellar: true,
       parkingSpaces: true,
 
-      // ✅ NEW: rent/infra fields (optional for search)
+      // rent/infra fields
       heatingType: true,
       chargesMonthly: true,
       deposit: true,
@@ -134,27 +175,47 @@ export async function indexListing(listingId: string) {
 
   // Drafts: keep embedding null
   if (!listing.isPublished) {
-    await prisma.$executeRaw`
-      update "ListingSearchIndex"
-      set embedding = null
-      where "listingId" = ${listingId};
-    `;
+    await prisma.$executeRaw(
+      Prisma.sql`
+        update "ListingSearchIndex"
+        set embedding = null
+        where "listingId" = ${listingId};
+      `
+    );
     return;
   }
 
   // Published: best-effort embedding write
   try {
     const emb = await embedText(searchText);
-    if (emb.vector.length !== 1536) {
-      throw new Error(`Expected 1536 dims, got ${emb.vector.length}`);
+
+    // Robust normalization (fixes the "{ "0.1","0.2" }" / quoted CSV issue and catches garbage dims)
+    const vec = normalizeEmbedding((emb as any)?.vector ?? emb);
+
+    if (!vec) {
+      throw new Error(
+        `Invalid embedding payload (expected 1536 finite floats). Got: ${
+          Array.isArray((emb as any)?.vector)
+            ? `array(len=${(emb as any).vector.length})`
+            : typeof emb
+        }`
+      );
     }
 
-    await prisma.$executeRaw`
-      update "ListingSearchIndex"
-      set embedding = ${emb.vector}::vector(1536)
-      where "listingId" = ${listingId};
-    `;
+    const literal = toPgVectorLiteral(vec);
+
+    await prisma.$executeRaw(
+      Prisma.sql`
+        update "ListingSearchIndex"
+        set embedding = ${literal}::vector(1536)
+        where "listingId" = ${listingId};
+      `
+    );
   } catch (e) {
     console.error("embedText failed; leaving embedding null", e);
+    // Keep best-effort behavior; optionally ensure it's null:
+    // await prisma.$executeRaw(Prisma.sql`
+    //   update "ListingSearchIndex" set embedding = null where "listingId" = ${listingId};
+    // `);
   }
 }

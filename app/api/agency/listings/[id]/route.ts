@@ -1,4 +1,4 @@
-// app/api/agency/listings/[id]/route.ts
+// /app/api/agency/listings/[id]/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAgencyContext } from "@/lib/requireAgencyContext";
@@ -9,8 +9,8 @@ import {
   HeatingType,
   ListingCondition,
   ListingKind,
-  MemberRole,
   PropertyType,
+  ListingStatus, // ✅ add
 } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -25,7 +25,14 @@ type UpdateListingBody = {
   commune?: string;
   addressHint?: string | null;
 
+  /**
+   * NOTE:
+   * Prisma schema: price Int (required).
+   * We therefore do NOT accept null as an update.
+   * Use 0 for "Price on request".
+   */
   price?: number | null;
+
   sizeSqm?: number;
   bedrooms?: number;
   bathrooms?: number;
@@ -53,6 +60,10 @@ type UpdateListingBody = {
   chargesMonthly?: number | null;
   feesAgency?: number | null;
   deposit?: number | null;
+
+  // ✅ lifecycle
+  status?: string;
+  soldReason?: string | null;
 };
 
 function canEdit(role: string): boolean {
@@ -92,7 +103,11 @@ function safeInt(v: unknown, min: number, max: number): number | undefined {
   return Math.max(min, Math.min(max, n));
 }
 
-function safeNullableInt(v: unknown, min: number, max: number): number | null | undefined {
+function safeNullableInt(
+  v: unknown,
+  min: number,
+  max: number
+): number | null | undefined {
   if (v === null) return null;
   const n = safeInt(v, min, max);
   return n;
@@ -114,10 +129,28 @@ function safeISODateOrNull(v: unknown): Date | null | undefined {
 }
 
 async function getScopedListingOrNull(listingId: string, agencyId: string) {
+  // ✅ include lifecycle & isPublished for deterministic updates
   return prisma.listing.findFirst({
     where: { id: listingId, agencyId },
-    select: { id: true, price: true, kind: true },
+    select: {
+      id: true,
+      price: true,
+      kind: true,
+      status: true,
+      soldAt: true,
+      archivedAt: true,
+      soldReason: true,
+      isPublished: true,
+    },
   });
+}
+
+function computeSearchIndexStatus(args: {
+  isPublished: boolean;
+  status: ListingStatus;
+}) {
+  // Only ACTIVE + published should be "PUBLISHED" in search index
+  return args.isPublished && args.status === "ACTIVE" ? "PUBLISHED" : "UNPUBLISHED";
 }
 
 export async function PATCH(
@@ -172,7 +205,8 @@ export async function PATCH(
 
   if (typeof body.condition === "string") {
     const v = body.condition.trim().toUpperCase();
-    if (isEnumValue(ListingCondition, v)) updateData.condition = v as ListingCondition;
+    if (isEnumValue(ListingCondition, v))
+      updateData.condition = v as ListingCondition;
   }
 
   if (typeof body.energyClass === "string") {
@@ -189,8 +223,55 @@ export async function PATCH(
     }
   }
 
+  // ✅ lifecycle: status + soldReason
+  let nextStatus: ListingStatus | undefined;
+  if (typeof body.status === "string") {
+    const v = body.status.trim().toUpperCase();
+    if (isEnumValue(ListingStatus, v)) nextStatus = v as ListingStatus;
+  }
+
+  const nextSoldReason = safeNullableText(body.soldReason, 120);
+  // nextSoldReason:
+  // - undefined => do not update
+  // - null      => clear
+  // - string    => set
+
+  // If status provided, apply deterministic lifecycle rules
+  if (nextStatus !== undefined) {
+    const now = new Date();
+    updateData.status = nextStatus;
+
+    if (nextStatus === "SOLD" || nextStatus === "UNAVAILABLE") {
+      // soldAt should be first time only
+      updateData.soldAt = existing.soldAt ?? now;
+      updateData.archivedAt = null;
+      if (nextSoldReason !== undefined) updateData.soldReason = nextSoldReason;
+    } else if (nextStatus === "ARCHIVED") {
+      updateData.archivedAt = now;
+      // keep soldAt untouched
+      if (nextSoldReason !== undefined) updateData.soldReason = nextSoldReason;
+    } else if (nextStatus === "ACTIVE") {
+      updateData.archivedAt = null;
+      // keep soldAt & soldReason by default (you can clear if you want)
+      if (nextSoldReason !== undefined) updateData.soldReason = nextSoldReason;
+    }
+
+    // Important UX/business rule:
+    // If listing is not ACTIVE, it should not be publicly published.
+    if (nextStatus !== "ACTIVE" && existing.isPublished) {
+      updateData.isPublished = false;
+    }
+  } else {
+    // Status not provided, but soldReason might be provided independently
+    if (nextSoldReason !== undefined) updateData.soldReason = nextSoldReason;
+  }
+
   // numbers (core)
-  const nextPrice = body.price === null ? null : safeInt(body.price, 0, 50_000_000);
+  // IMPORTANT: price is REQUIRED in schema, so:
+  // - if body.price is null -> ignore (do not update)
+  // - if body.price is number -> validate 0..50m and update
+  const nextPrice =
+    body.price === null ? undefined : safeInt(body.price, 0, 50_000_000);
   if (nextPrice !== undefined) updateData.price = nextPrice;
 
   const nextSizeSqm = safeInt(body.sizeSqm, 1, 100_000);
@@ -256,25 +337,36 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   }
 
-  // price history append if price changed to a concrete number (ignore null clears)
-  const priceChanged =
-    nextPrice !== undefined &&
-    nextPrice !== null &&
-    nextPrice !== existing.price;
+  // price history append if price changed (0 is a valid price)
+  const priceChanged = nextPrice !== undefined && nextPrice !== existing.price;
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.listing.update({
+      // 1) Update listing
+      const updatedListing = await tx.listing.update({
         where: { id },
         data: updateData,
-        select: { id: true },
+        select: { id: true, isPublished: true, status: true },
       });
 
+      // 2) Append price history if needed
       if (priceChanged) {
         await tx.listingPriceHistory.create({
           data: { listingId: id, price: nextPrice!, recordedAt: new Date() },
         });
       }
+
+      // 3) Keep search index status aligned (best-effort but inside txn)
+      // If index row doesn't exist yet, updateMany is safe (0 rows affected).
+      const siStatus = computeSearchIndexStatus({
+        isPublished: updatedListing.isPublished,
+        status: updatedListing.status,
+      });
+
+      await tx.listingSearchIndex.updateMany({
+        where: { listingId: id },
+        data: { status: siStatus },
+      });
     });
 
     // Reindex after commit (best-effort)
@@ -286,8 +378,7 @@ export async function PATCH(
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to update listing";
+    const message = err instanceof Error ? err.message : "Failed to update listing";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -324,8 +415,7 @@ export async function DELETE(
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to delete listing";
+    const message = err instanceof Error ? err.message : "Failed to delete listing";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

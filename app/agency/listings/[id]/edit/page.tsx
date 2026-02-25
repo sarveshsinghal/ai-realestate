@@ -1,49 +1,96 @@
 // app/agency/listings/[id]/edit/page.tsx
+import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { requireAgencyContext } from "@/lib/requireAgencyContext";
 import ListingEditor from "@/app/agency/listings/_components/ListingEditor";
+import { requireAgencyContext } from "@/lib/requireAgencyContext";
 
-export default async function EditListingPage(props: { params: Promise<{ id: string }> }) {
+export const runtime = "nodejs";
+
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const { agency } = await requireAgencyContext();
-  const { id } = await props.params;
+  const { id: listingId } = await params;
 
   const listing = await prisma.listing.findFirst({
-    where: { id, agencyId: agency.id },
-    include: {
-      media: { orderBy: { sortOrder: "asc" } },
-      priceHistory: { orderBy: { recordedAt: "desc" }, take: 20 },
+    where: { id: listingId, agencyId: agency.id },
+    select: {
+      id: true,
+
+      title: true,
+      description: true,
+
+      kind: true,
+      propertyType: true,
+
+      commune: true,
+      addressHint: true,
+
+      price: true,
+      sizeSqm: true,
+      bedrooms: true,
+      bathrooms: true,
+
+      condition: true,
+      energyClass: true,
+
+      status: true,
+      soldReason: true,
+      soldAt: true,
+      archivedAt: true,
+
+      availableFrom: true,
+      yearBuilt: true,
+      floor: true,
+      totalFloors: true,
+
+      furnished: true,
+      petsAllowed: true,
+
+      hasElevator: true,
+      hasBalcony: true,
+      hasTerrace: true,
+      hasGarden: true,
+      hasCellar: true,
+      parkingSpaces: true,
+
+      heatingType: true,
+      chargesMonthly: true,
+      feesAgency: true,
+      deposit: true,
+
+      isPublished: true,
+
+      media: {
+        select: { url: true, sortOrder: true },
+        orderBy: { sortOrder: "asc" },
+      },
+
+      priceHistory: {
+        select: { price: true, recordedAt: true },
+        orderBy: { recordedAt: "desc" },
+        take: 50,
+      },
     },
   });
 
-  if (!listing) {
-    return (
-      <div className="mx-auto max-w-3xl p-6">
-        <h1 className="text-2xl font-semibold">Listing not found</h1>
-        <p className="mt-2 text-sm text-gray-600">This listing does not exist or you don’t have access.</p>
-      </div>
-    );
-  }
+  if (!listing) return notFound();
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <h1 className="text-2xl font-semibold">Edit listing</h1>
-      <p className="mt-1 text-sm text-gray-600">Manage details, images, and pricing history.</p>
-
-      <div className="mt-6">
-        <ListingEditor
-          listing={{
-            id: listing.id,
-            title: listing.title ?? "",
-            price: listing.price ?? null,
-            isPublished: listing.isPublished ?? false,
-          }}
-          initialMedia={listing.media.map((m) => ({ url: m.url, sortOrder: m.sortOrder }))}
-          priceHistory={listing.priceHistory.map((p) => ({
-            price: p.price,
-            createdAt: p.recordedAt.toISOString(),
-          }))}
-        />
-      </div>
-    </div>
+    <ListingEditor
+      listing={{
+        ...listing,
+        availableFrom: listing.availableFrom ? listing.availableFrom.toISOString() : null,
+        soldAt: listing.soldAt ? listing.soldAt.toISOString() : null,
+        archivedAt: listing.archivedAt ? listing.archivedAt.toISOString() : null,
+      }}
+      initialMedia={listing.media}
+      priceHistory={listing.priceHistory.map((p) => ({
+        price: p.price,
+        createdAt: p.recordedAt.toISOString(),
+      }))}
+    />
   );
 }

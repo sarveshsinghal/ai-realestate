@@ -1,78 +1,166 @@
-import Image from "next/image";
+// app/components/ListingCard.tsx
 import Link from "next/link";
-import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
-import { DealScoreBadge } from "./DealScoreBadge";
-import type { Listing } from "@/lib/mockData";
-import { dealScore } from "@/lib/scoring";
+import Image from "next/image";
+import { MapPin, BedDouble, Bath, Ruler } from "lucide-react";
 
-function formatEUR(n: number) {
-  return new Intl.NumberFormat("de-LU", {
-    style: "currency",
-    currency: "EUR",
-    maximumFractionDigits: 0,
-  }).format(n);
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import WishlistButtonClient from "@/app/components/public/WishlistButton.client";
+
+import { normalizeListingImages } from "@/app/components/public/listing-normalize";
+
+function formatPriceEUR(n: number | null) {
+  if (!n || n <= 0) return "Price on request";
+  try {
+    return new Intl.NumberFormat("de-LU", {
+      style: "currency",
+      currency: "EUR",
+      maximumFractionDigits: 0,
+    }).format(n);
+  } catch {
+    return `€${Math.round(n).toLocaleString()}`;
+  }
 }
 
-export function ListingCard({ listing }: { listing: Listing }) {
-  const s = dealScore(listing);
+function humanizeEPC(v: string | null | undefined) {
+  if (!v) return "Energy —";
+  const key = String(v).toUpperCase();
+
+  const map: Record<string, string> = {
+    A: "Energy: Excellent",
+    B: "Energy: Very good",
+    C: "Energy: Good",
+    D: "Energy: Average",
+    E: "Energy: Poor",
+    F: "Energy: Very poor",
+  };
+
+  return map[key] ?? "Energy —";
+}
+
+const EPC_LABELS: Record<string, string> = {
+  A: "Excellent",
+  B: "Very good",
+  C: "Good",
+  D: "Average",
+  E: "Poor",
+  F: "Very poor",
+};
+
+function formatEPC(v: string | null | undefined) {
+  if (!v) return "EPC —";
+  const key = String(v).toUpperCase();
+  const label = EPC_LABELS[key] ?? "—";
+  return `EPC ${key} (${label})`;
+}
+
+export default function ListingCard({
+  listing,
+  href,
+  className,
+}: {
+  listing: any;
+  href: string;
+  className?: string;
+}) {
+  const images = normalizeListingImages(listing);
+  const img = images[0];
+
+  const title = listing?.title ?? "Listing";
+  const commune = listing?.commune ?? "";
+  const bedrooms = typeof listing?.bedrooms === "number" ? listing.bedrooms : null;
+  const bathrooms = typeof listing?.bathrooms === "number" ? listing.bathrooms : null;
+  const sizeSqm = typeof listing?.sizeSqm === "number" ? listing.sizeSqm : null;
+  const kind = listing?.kind ?? null; // SALE | RENT
+  const price = listing?.price ?? null;
 
   return (
-    <Card className="overflow-hidden hover:shadow-md transition-shadow">
-      <CardHeader className="p-0">
-        <Link href={`/listing/${listing.id}`} className="block">
-          <div className="relative h-48 w-full">
-            <Image
-              src={listing.images[0]}
-              alt={listing.title}
-              fill
-              className="object-cover"
-              sizes="(max-width: 768px) 100vw, 33vw"
-              priority={false}
-            />
-            <div className="absolute top-3 left-3">
-              <DealScoreBadge grade={s.grade} />
+    <Link
+      href={href}
+      className={cn(
+        "group block overflow-hidden rounded-3xl border bg-background shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-lg",
+        className
+      )}
+    >
+      <div className="relative aspect-[4/3] overflow-hidden">
+        <Image
+          src={img}
+          alt={title}
+          fill
+          className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+        />
+
+        {/* soft gradient for readability */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/35 via-black/0 to-black/0 opacity-90" />
+
+        {/* top badges */}
+        <div className="absolute left-4 top-4 flex items-center gap-2">
+          {kind ? (
+            <Badge className="rounded-full bg-background/85 text-foreground backdrop-blur">
+              {String(kind).toUpperCase()}
+            </Badge>
+          ) : null}
+
+          {listing?.energyClass ? (
+            <Badge className="rounded-full bg-background/85 text-foreground backdrop-blur">
+              {humanizeEPC(listing.energyClass)}
+            </Badge>
+          ) : null}
+        </div>
+
+        {/* wishlist */}
+        <div className="absolute right-4 top-4">
+          <WishlistButtonClient listingId={listing.id} />
+        </div>
+
+        {/* bottom price */}
+        <div className="absolute bottom-4 left-4 right-4 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold text-white drop-shadow-sm">
+              {title}
+            </div>
+            {commune ? (
+              <div className="mt-1 inline-flex items-center gap-1 text-xs text-white/90 drop-shadow-sm">
+                <MapPin className="h-3.5 w-3.5" />
+                <span className="truncate">{commune}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="shrink-0 text-right">
+            <div className="text-base font-semibold text-white drop-shadow-sm">
+              {formatPriceEUR(price)}
             </div>
           </div>
-        </Link>
-      </CardHeader>
-
-      <CardContent className="p-4 space-y-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <Link href={`/listing/${listing.id}`}>
-              <h3 className="font-semibold leading-tight line-clamp-2">
-                {listing.title}
-              </h3>
-            </Link>
-            <p className="text-sm text-muted-foreground">
-              {listing.commune} • {listing.bedrooms} BR • {listing.sizeSqm} m² • EPC{" "}
-              {listing.energyClass}
-            </p>
-          </div>
-          <div className="text-right shrink-0">
-            <p className="font-semibold">{formatEUR(listing.price)}</p>
-            <p className="text-xs text-muted-foreground">
-              {s.pricePerSqm.toLocaleString("de-LU")} €/m²
-            </p>
-          </div>
         </div>
+      </div>
 
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="rounded-md border p-2">
-            <p className="text-xs text-muted-foreground">Est. rent</p>
-            <p className="font-medium">{formatEUR(s.estMonthlyRent)}/mo</p>
-          </div>
-          <div className="rounded-md border p-2">
-            <p className="text-xs text-muted-foreground">Gross yield</p>
-            <p className="font-medium">{s.estGrossYieldPct}%</p>
-          </div>
+      {/* content */}
+      <div className="p-4">
+        <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+          {typeof bedrooms === "number" ? (
+            <span className="inline-flex items-center gap-1">
+              <BedDouble className="h-4 w-4" />
+              {bedrooms} bed
+            </span>
+          ) : null}
+
+          {typeof bathrooms === "number" ? (
+            <span className="inline-flex items-center gap-1">
+              <Bath className="h-4 w-4" />
+              {bathrooms} bath
+            </span>
+          ) : null}
+
+          {typeof sizeSqm === "number" ? (
+            <span className="inline-flex items-center gap-1">
+              <Ruler className="h-4 w-4" />
+              {sizeSqm} m²
+            </span>
+          ) : null}
         </div>
-      </CardContent>
-
-      <CardFooter className="px-4 pb-4 pt-0 flex items-center justify-between text-xs text-muted-foreground">
-        <span>{listing.agencyName}</span>
-        <span>Score: {s.score}/100</span>
-      </CardFooter>
-    </Card>
+      </div>
+    </Link>
   );
 }

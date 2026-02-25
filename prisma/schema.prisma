@@ -69,6 +69,31 @@ enum HeatingType {
   OTHER
 }
 
+enum MatchScope {
+  AGENCY
+  NETWORK
+  PUBLIC
+}
+
+enum BuyerProfileSource {
+  LEAD_MESSAGE
+  MANUAL
+  MIXED
+}
+
+enum ListingStatus {
+  ACTIVE
+  SOLD
+  UNAVAILABLE
+  ARCHIVED
+}
+
+enum ListingBadge {
+  NONE
+  TRENDING
+  MOST_SAVED
+  MOST_VIEWED
+}
 
 model User {
   id             String @id @default(cuid())
@@ -90,9 +115,11 @@ model Agency {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members  AgencyMember[]
-  listings Listing[]
-  leads    Lead[]
+  members       AgencyMember[]
+  listings      Listing[]
+  leads         Lead[]
+  buyerProfiles BuyerProfile[]
+  leadMatches   LeadMatch[]
 }
 
 model AgencyMember {
@@ -136,34 +163,34 @@ model Listing {
   description String? @db.Text
 
   // ✅ NEW: sale vs rent + property type
-  kind         ListingKind   @default(SALE)
-  propertyType PropertyType  @default(APARTMENT)
+  kind         ListingKind  @default(SALE)
+  propertyType PropertyType @default(APARTMENT)
 
   // ✅ NEW: core “Lux consumer expectations”
   availableFrom DateTime?
   yearBuilt     Int?
   floor         Int?
   totalFloors   Int?
-  furnished     Boolean?     @default(false)
-  petsAllowed   Boolean?     @default(false)
+  furnished     Boolean?  @default(false)
+  petsAllowed   Boolean?  @default(false)
 
   // ✅ NEW: amenities + parking
-  hasElevator     Boolean? @default(false)
-  hasBalcony      Boolean? @default(false)
-  hasTerrace      Boolean? @default(false)
-  hasGarden       Boolean? @default(false)
-  hasCellar       Boolean? @default(false)
-  parkingSpaces   Int?     @default(0)
+  hasElevator   Boolean? @default(false)
+  hasBalcony    Boolean? @default(false)
+  hasTerrace    Boolean? @default(false)
+  hasGarden     Boolean? @default(false)
+  hasCellar     Boolean? @default(false)
+  parkingSpaces Int?     @default(0)
 
   // ✅ NEW: energy & heating (Lux users filter by this)
-  heatingType   HeatingType?
+  heatingType    HeatingType?
   chargesMonthly Int? // rent listings (EUR)
   feesAgency     Int? // optional
   deposit        Int? // optional
 
   // ✅ NEW: optional geodata (future map search)
-  latitude   Float?
-  longitude  Float?
+  latitude  Float?
+  longitude Float?
 
   // Make nullable to allow seed/backfill before agency linkage
   agencyId String?
@@ -174,12 +201,23 @@ model Listing {
 
   isPublished Boolean @default(true)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // ✅ lifecycle
+  status     ListingStatus @default(ACTIVE)
+  // soldAt     DateTime?
+  // archivedAt DateTime?
+  soldAt     DateTime? @db.Timestamptz(3)
+  archivedAt DateTime? @db.Timestamptz(3)
+  soldReason String? // "sold" | "rented" | "withdrawn" (free text for MVP)
+
+  // createdAt DateTime @default(now())
+  // updatedAt DateTime @updatedAt
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
 
   media        ListingMedia[]
   priceHistory ListingPriceHistory[]
   leads        Lead[]
+  matches      LeadMatch[]
 
   @@index([commune])
   @@index([price])
@@ -190,8 +228,10 @@ model Listing {
   @@index([propertyType])
   @@index([isPublished])
   @@index([agencyId])
+  @@index([status])
+  @@index([isPublished, status])
+  @@index([commune, status])
 }
-
 
 model ListingMedia {
   id        String @id @default(cuid())
@@ -235,24 +275,28 @@ model Lead {
   agency  Agency?  @relation(fields: [agencyId], references: [id], onDelete: SetNull)
   listing Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
 
+  buyerProfile BuyerProfile?
+  matches      LeadMatch[]
+
   @@index([agencyId, createdAt])
   @@index([listingId])
   @@index([status])
 }
 
 model ListingSearchIndex {
-  listingId  String                 @id
+  listingId  String                       @id
   agencyId   String
   status     String
   searchText String
   embedding  Unsupported("vector(1536)")?
-  updatedAt  DateTime               @updatedAt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  tsv Unsupported("tsvector")?
 
   price        Int?
   bedrooms     Int?
   bathrooms    Int?
   sizeSqm      Int?
-  kind         String?      // "SALE"/"RENT"
+  kind         String? // "SALE"/"RENT"
   propertyType String?
   commune      String?
 
@@ -267,3 +311,165 @@ model ListingSearchIndex {
   @@index([commune])
 }
 
+model BuyerProfile {
+  id       String @id @default(cuid())
+  agencyId String
+  leadId   String @unique
+
+  scope  MatchScope         @default(AGENCY)
+  source BuyerProfileSource @default(LEAD_MESSAGE)
+
+  // Structured preferences (fast filtering)
+  kind         ListingKind?
+  propertyType PropertyType?
+
+  budgetMin    Int?
+  budgetMax    Int?
+  sizeMinSqm   Int?
+  sizeMaxSqm   Int?
+  bedroomsMin  Int?
+  bedroomsMax  Int?
+  bathroomsMin Int?
+  communes  String[] @default([]) // matches DB default ARRAY[]::text[]
+
+  // Amenities as requirements (hard filters)
+  furnished   Boolean?
+  petsAllowed Boolean?
+  hasElevator Boolean?
+  hasBalcony  Boolean?
+  hasTerrace  Boolean?
+  hasGarden   Boolean?
+  hasCellar   Boolean?
+  parkingMin  Int?
+
+  // Free text snapshot used for embeddings/ranking (derived)
+  queryText String? @db.Text
+
+  // Optional: store buyer embedding for semantic matching later
+  embedding Unsupported("vector(1536)")?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt // matches DB default now()
+
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  versions BuyerProfileVersion[]
+
+  @@index([agencyId])
+  @@index([scope])
+}
+
+model BuyerProfileVersion {
+  id             String @id @default(cuid())
+  buyerProfileId String
+
+  // audit + reproducibility
+  model         String?
+  promptVersion String?
+  sourceText    String? @db.Text
+  extractedJson Json
+  notes         String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  buyerProfile BuyerProfile @relation(fields: [buyerProfileId], references: [id], onDelete: Cascade)
+
+  @@index([buyerProfileId, createdAt])
+}
+
+model LeadMatch {
+  id        String @id @default(cuid())
+  agencyId  String
+  leadId    String
+  listingId String
+
+  scope MatchScope @default(AGENCY)
+
+  // scoring (store components for explainability)
+  score           Float
+  structuredScore Float
+  semanticScore   Float
+  freshnessScore  Float?
+
+  // why it matched (UI-ready)
+  reasons Json
+
+  createdAt DateTime @default(now())
+
+  agency  Agency  @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  lead    Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, listingId])
+  @@index([agencyId, createdAt])
+  @@index([listingId])
+  @@index([leadId])
+  @@index([scope])
+}
+
+
+model SimilarFollowRule {
+  id           String   @id @default(cuid())
+  buyerId      String
+  source       String
+  communeCodes String[]
+  minPrice     Int?
+  maxPrice     Int?
+  propertyType String?
+  bedrooms     Int?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([buyerId])
+  @@index([isActive])
+}
+
+model WishlistItem {
+  id        String   @id @default(cuid())
+  userId    String
+  listingId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, listingId])
+  @@index([userId, createdAt])
+  @@index([listingId, createdAt])
+}
+
+model ListingViewEvent {
+  id        String   @id @default(cuid())
+  listingId String
+  userId    String?  // nullable: not all viewers are logged in
+  sessionId String?  // best-effort dedupe
+  createdAt DateTime @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([listingId, createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+model ListingPopularity {
+  id         String      @id @default(cuid())
+  listingId  String      @unique
+  score7d    Float       @default(0)
+  views7d    Int         @default(0)
+  saves7d    Int         @default(0)
+  leads7d    Int         @default(0)
+  badge      ListingBadge @default(NONE)
+  segmentKey String      @default("") // e.g. kind|propertyType|commune
+  updatedAt  DateTime    @updatedAt
+  createdAt  DateTime    @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([badge, score7d])
+  @@index([segmentKey, score7d])
+}

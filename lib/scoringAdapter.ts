@@ -1,3 +1,4 @@
+// lib/scoringAdapter.ts
 import type { ListingCondition, EnergyClass } from "@prisma/client";
 import type { Listing as ScoringListing } from "@/lib/mockData";
 
@@ -11,28 +12,37 @@ export function toScoringListing(input: {
   bathrooms: number;
   condition: ListingCondition;
   energyClass: EnergyClass;
+  agencyName?: string | null;
+  createdAt?: Date | string | null;
 }): ScoringListing {
   const condition: ScoringListing["condition"] =
     input.condition === "NEW"
       ? "New"
       : input.condition === "RENOVATED"
-        ? "Renovated"
-        : input.condition === "GOOD"
-          ? "Good"
-          : "To renovate";
+      ? "Renovated"
+      : input.condition === "GOOD"
+      ? "Good"
+      : "To renovate";
 
   const energyClass: ScoringListing["energyClass"] =
     input.energyClass === "A"
       ? "A"
       : input.energyClass === "B"
-        ? "B"
-        : input.energyClass === "C"
-          ? "C"
-          : input.energyClass === "D"
-            ? "D"
-            : input.energyClass === "E"
-              ? "E"
-              : "F";
+      ? "B"
+      : input.energyClass === "C"
+      ? "C"
+      : input.energyClass === "D"
+      ? "D"
+      : input.energyClass === "E"
+      ? "E"
+      : "F";
+
+  const createdAtIso =
+    input.createdAt instanceof Date
+      ? input.createdAt.toISOString()
+      : typeof input.createdAt === "string"
+      ? input.createdAt
+      : new Date().toISOString();
 
   return {
     id: input.id,
@@ -44,6 +54,12 @@ export function toScoringListing(input: {
     bathrooms: input.bathrooms,
     condition,
     energyClass,
-    media: [], // required by ScoringListing type
+
+    // required by mockData Listing type
+    agencyName: input.agencyName ?? "Marketplace",
+    createdAt: createdAtIso,
+
+    // mockData Listing uses `images`
+    images: [],
   };
 }

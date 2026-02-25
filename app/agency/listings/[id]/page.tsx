@@ -22,6 +22,11 @@ export default async function AgencyListingManagePage({
       bedrooms: true,
       bathrooms: true,
       isPublished: true,
+
+      // ✅ NEW: lifecycle fields
+      status: true,
+      soldAt: true,
+
       agencyId: true,
       createdAt: true,
     },
@@ -46,9 +51,80 @@ export default async function AgencyListingManagePage({
           </div>
         </div>
 
-        <div className="pt-2 text-sm text-muted-foreground">
-          Status: {listing.isPublished ? "Published" : "Draft"}
+        <div className="pt-2 text-sm text-muted-foreground space-y-1">
+          <div>
+            Publish state: {listing.isPublished ? "Published" : "Draft"}
+          </div>
+
+          <div>
+            Availability:{" "}
+            <span className="font-medium">{listing.status}</span>
+            {listing.soldAt && (
+              <span className="ml-2 text-xs text-muted-foreground">
+                (since{" "}
+                {new Date(listing.soldAt).toLocaleDateString("de-LU", {
+                  year: "numeric",
+                  month: "short",
+                  day: "2-digit",
+                })}
+                )
+              </span>
+            )}
+          </div>
         </div>
+      </div>
+
+      {/* ✅ NEW: Availability actions (simple MVP using POST forms) */}
+      <div className="border rounded-md p-4 space-y-3">
+        <div className="text-sm text-muted-foreground">Availability actions</div>
+
+        <div className="flex flex-wrap gap-2">
+          <form action={`/api/listings/${listing.id}/status`} method="post">
+            <input type="hidden" name="status" value="ACTIVE" />
+            <button
+              type="submit"
+              className="px-3 py-1 rounded-md border text-sm hover:bg-accent"
+            >
+              Mark Active
+            </button>
+          </form>
+
+          <form action={`/api/listings/${listing.id}/status`} method="post">
+            <input type="hidden" name="status" value="SOLD" />
+            <input type="hidden" name="soldReason" value="sold" />
+            <button
+              type="submit"
+              className="px-3 py-1 rounded-md border text-sm hover:bg-accent"
+            >
+              Mark Sold
+            </button>
+          </form>
+
+          <form action={`/api/listings/${listing.id}/status`} method="post">
+            <input type="hidden" name="status" value="UNAVAILABLE" />
+            <button
+              type="submit"
+              className="px-3 py-1 rounded-md border text-sm hover:bg-accent"
+            >
+              Mark Unavailable
+            </button>
+          </form>
+
+          <form action={`/api/listings/${listing.id}/status`} method="post">
+            <input type="hidden" name="status" value="ARCHIVED" />
+            <button
+              type="submit"
+              className="px-3 py-1 rounded-md border text-sm hover:bg-accent"
+            >
+              Archive
+            </button>
+          </form>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Sold/unavailable listings will be auto-archived after 7 days (once the
+          scheduled job is enabled).
+        </p>
       </div>
 
       <div className="flex gap-3">
@@ -61,7 +137,8 @@ export default async function AgencyListingManagePage({
       </div>
 
       <div className="text-sm text-muted-foreground">
-        Next: edit form, media management, pricing history, and AI recommendations.
+        Next: edit form, media management, pricing history, and AI
+        recommendations.
       </div>
     </main>
   );

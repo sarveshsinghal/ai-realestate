@@ -1,11 +1,12 @@
-// app/api/agency/listings/[id]/publish/route.ts (or wherever this file lives)
-export const runtime = "nodejs";
-
+// app/api/agency/listings/[id]/publish/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAgencyContext } from "@/lib/auth-server";
-import { MemberRole } from "@prisma/client";
-import { indexListing } from "@/lib/search/indexListing"; // ✅ A4: reindex on publish toggle
+import { requireAgencyContext } from "@/lib/requireAgencyContext";
+import { MemberRole, ListingStatus } from "@prisma/client";
+import { buildListingSearchText } from "@/lib/search/buildListingSearchText";
+import { indexListing } from "@/lib/search/indexListing";
+
+export const runtime = "nodejs";
 
 export async function PATCH(
   req: Request,
@@ -13,46 +14,113 @@ export async function PATCH(
 ) {
   try {
     const { membership, agency } = await requireAgencyContext();
+    const allowedRoles: MemberRole[] = [MemberRole.ADMIN, MemberRole.MANAGER];
 
-    // Only ADMIN/MANAGER can publish/unpublish
-    if (![MemberRole.ADMIN, MemberRole.MANAGER].includes(membership.role)) {
+    if (!allowedRoles.includes(membership.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const { id } = await ctx.params;
-
     const body = await req.json().catch(() => ({}));
     const isPublished = Boolean(body?.isPublished);
 
-    // Ensure listing belongs to this agency
-    const listing = await prisma.listing.findUnique({
-      where: { id },
-      select: { id: true, agencyId: true, isPublished: true },
+    // Must belong to agency
+    const listing = await prisma.listing.findFirst({
+      where: { id, agencyId: agency.id },
+      select: {
+        id: true,
+        agencyId: true,
+        agencyName: true,
+        isPublished: true,
+
+        // ✅ lifecycle
+        status: true,
+
+        title: true,
+        description: true,
+        commune: true,
+        addressHint: true,
+        price: true,
+        sizeSqm: true,
+        bedrooms: true,
+        bathrooms: true,
+        condition: true,
+        energyClass: true,
+        kind: true,
+        propertyType: true,
+      },
     });
 
-    if (!listing || listing.agencyId !== agency.id) {
+    if (!listing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // No-op if already same state
-    if (listing.isPublished === isPublished) {
-      return NextResponse.json({ id: listing.id, isPublished: listing.isPublished });
-    }
-
+    // 1) Update publish state
     const updated = await prisma.listing.update({
       where: { id },
       data: { isPublished },
       select: { id: true, isPublished: true },
     });
 
-    // ✅ Reindex AFTER DB update succeeds
-    // - If published => embed + store vector
-    // - If unpublished => clear embedding (per indexListing logic)
-    try {
-      await indexListing(id);
-    } catch (e) {
-      console.error("indexListing failed after publish toggle:", e);
-      // Best-effort; don't fail publish UX
+    // ✅ 2) Compute search index status (lifecycle-aware)
+    // Only index as PUBLISHED when it's publicly visible and ACTIVE.
+    const isIndexPublished =
+      isPublished === true && listing.status === ListingStatus.ACTIVE;
+
+    // Your hybrid SQL checks: si.status = 'PUBLISHED'
+    // So anything else should NOT be 'PUBLISHED'
+    const indexStatus = isIndexPublished ? "PUBLISHED" : "UNPUBLISHED";
+
+    const searchText = buildListingSearchText({
+      id: listing.id,
+      title: listing.title,
+      commune: listing.commune,
+      addressHint: listing.addressHint ?? null,
+      price: listing.price ?? null,
+      sizeSqm: listing.sizeSqm ?? null,
+      bedrooms: listing.bedrooms ?? null,
+      bathrooms: listing.bathrooms ?? null,
+      condition: String(listing.condition),
+      energyClass: String(listing.energyClass),
+      agencyName: listing.agencyName ?? null,
+    });
+
+    await prisma.listingSearchIndex.upsert({
+      where: { listingId: id },
+      create: {
+        listingId: id,
+        agencyId: agency.id,
+        status: indexStatus,
+        searchText,
+        price: listing.price ?? null,
+        bedrooms: listing.bedrooms ?? null,
+        bathrooms: listing.bathrooms ?? null,
+        sizeSqm: listing.sizeSqm ?? null,
+        kind: String(listing.kind),
+        propertyType: String(listing.propertyType),
+        commune: listing.commune ?? null,
+      },
+      update: {
+        agencyId: agency.id,
+        status: indexStatus,
+        searchText,
+        price: listing.price ?? null,
+        bedrooms: listing.bedrooms ?? null,
+        bathrooms: listing.bathrooms ?? null,
+        sizeSqm: listing.sizeSqm ?? null,
+        kind: String(listing.kind),
+        propertyType: String(listing.propertyType),
+        commune: listing.commune ?? null,
+      },
+    });
+
+    // ✅ 3) Only embed/index when it will actually show up in public search
+    if (isIndexPublished) {
+      try {
+        await indexListing(id);
+      } catch (e) {
+        console.error("indexListing failed after publish toggle", e);
+      }
     }
 
     return NextResponse.json(updated);

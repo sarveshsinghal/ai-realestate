@@ -1,6 +1,5 @@
+// scripts/verify-agency-wiring.ts
 import "dotenv/config";
-import { prisma } from "./_prisma";
-
 
 // Force scripts to use a known-good URL (same one your app uses)
 process.env.DATABASE_URL =
@@ -9,7 +8,6 @@ process.env.DATABASE_URL =
   process.env.DATABASE_URL;
 
 import { prisma } from "@/lib/prisma";
-
 
 async function main() {
   const email = process.env.MY_LOGIN_EMAIL;
@@ -70,8 +68,7 @@ async function main() {
   }
 
   for (const lead of leads) {
-    const match =
-      lead.agencyId === membership.agencyId ? "✅ MATCH" : "❌ MISMATCH";
+    const match = lead.agencyId === membership.agencyId ? "✅ MATCH" : "❌ MISMATCH";
 
     console.log(
       `   ${lead.id} | agencyId=${lead.agencyId} | ${lead.email} | ${match}`

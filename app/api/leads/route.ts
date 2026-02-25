@@ -1,15 +1,39 @@
 // app/api/leads/route.ts
-export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resend, LEADS_FROM, LEADS_NOTIFY } from "@/lib/email/resend";
 import { newLeadEmailHtml } from "@/lib/email/templates/newLead";
+import { upsertBuyerProfileFromLead } from "@/lib/ai/buyerProfile/upsertBuyerProfileFromLead";
+import { runLeadMatch } from "@/lib/matching/runLeadMatch";
+import { requireAgencyContext } from "@/lib/auth-server";
+
+export const runtime = "nodejs";
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+type LeadStatus = "NEW" | "CONTACTED" | "QUALIFIED" | "VIEWING" | "OFFER" | "WON" | "LOST";
+
+const LEAD_STATUSES: LeadStatus[] = [
+  "NEW",
+  "CONTACTED",
+  "QUALIFIED",
+  "VIEWING",
+  "OFFER",
+  "WON",
+  "LOST",
+];
+
+function isLeadStatus(v: unknown): v is LeadStatus {
+  return typeof v === "string" && LEAD_STATUSES.includes(v as LeadStatus);
+}
+
+/**
+ * PUBLIC: Create a new lead from the public listing page form.
+ * - Multi-tenant scoping is derived from listing.agencyId.
+ * - Does NOT require auth.
+ */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -25,17 +49,11 @@ export async function POST(req: Request) {
     }
 
     if (!name || name.length < 2) {
-      return NextResponse.json(
-        { error: "Please enter your name" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Please enter your name" }, { status: 400 });
     }
 
     if (!email || !isValidEmail(email)) {
-      return NextResponse.json(
-        { error: "Please enter a valid email" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Please enter a valid email" }, { status: 400 });
     }
 
     if (message.length < 10) {
@@ -61,8 +79,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Listing not found" }, { status: 404 });
     }
 
-    // If a listing somehow has no agencyId, we still allow lead creation,
-    // but the lead will not show up in any agency inbox until fixed.
     const agencyId = listing.agencyId ?? null;
 
     // 2️⃣ Create lead in DB
@@ -79,7 +95,7 @@ export async function POST(req: Request) {
       select: { id: true },
     });
 
-    // 3️⃣ Send email (non-blocking)
+    // 3️⃣ Send email (best-effort)
     let emailSent = false;
     let emailError: string | null = null;
 
@@ -116,12 +132,107 @@ export async function POST(req: Request) {
       emailError = String(err?.message ?? err);
     }
 
-    return NextResponse.json(
-      { ok: true, id: lead.id, emailSent, emailError },
-      { status: 201 }
-    );
+    // 4️⃣ Best-effort buyer profiling + matching
+    // BuyerProfile requires agencyId; if null, skip.
+    if (agencyId) {
+      try {
+        await upsertBuyerProfileFromLead({ leadId: lead.id });
+        await runLeadMatch({ leadId: lead.id, topK: 10 });
+      } catch (e) {
+        console.error("buyer profiling/matching failed:", e);
+      }
+    }
+
+    return NextResponse.json({ ok: true, id: lead.id, emailSent, emailError }, { status: 201 });
   } catch (e) {
     console.error("Lead create error:", e);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+/**
+ * INTERNAL (AUTH REQUIRED): Update lead status (and optionally listingId).
+ * This is used by the agency UI for inline status changes / workflow.
+ *
+ * Endpoint: PATCH /api/leads
+ * Body: { id: string; status: LeadStatus; listingId?: string | null }
+ *
+ * Security:
+ * - Requires agency context.
+ * - Only updates leads that belong to that agency (lead.agencyId === agency.id).
+ */
+export async function PATCH(req: Request) {
+  try {
+    const { agency } = await requireAgencyContext();
+
+    const body = (await req.json().catch(() => null)) as
+      | { id?: unknown; status?: unknown; listingId?: unknown }
+      | null;
+
+    const id = typeof body?.id === "string" ? body.id.trim() : "";
+    const nextStatus = body?.status;
+
+    // listingId can be set to string, null, or omitted
+    const listingIdRaw = body?.listingId;
+    const listingId =
+      typeof listingIdRaw === "string"
+        ? listingIdRaw.trim() || null
+        : listingIdRaw === null
+        ? null
+        : undefined;
+
+    if (!id) {
+      return NextResponse.json({ error: "Missing lead id" }, { status: 400 });
+    }
+    if (!isLeadStatus(nextStatus)) {
+      return NextResponse.json(
+        { error: `Invalid status. Expected one of: ${LEAD_STATUSES.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    // Ensure lead belongs to agency (multi-tenant boundary)
+    const existing = await prisma.lead.findFirst({
+      where: { id, agencyId: agency.id },
+      select: { id: true, agencyId: true },
+    });
+
+    if (!existing) {
+      return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+    }
+
+    // If listingId is being changed, ensure it belongs to the same agency
+    if (typeof listingId !== "undefined" && listingId !== null) {
+      const listing = await prisma.listing.findFirst({
+        where: { id: listingId, agencyId: agency.id },
+        select: { id: true },
+      });
+
+      if (!listing) {
+        return NextResponse.json(
+          { error: "Listing not found (or not in your agency)" },
+          { status: 400 }
+        );
+      }
+    }
+
+    const updated = await prisma.lead.update({
+      where: { id },
+      data: {
+        status: nextStatus,
+        ...(typeof listingId !== "undefined" ? { listingId } : {}),
+      },
+      select: {
+        id: true,
+        status: true,
+        listingId: true,
+        updatedAt: true,
+      },
+    });
+
+    return NextResponse.json({ ok: true, lead: updated }, { status: 200 });
+  } catch (e: any) {
+    console.error("Lead update error:", e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

@@ -30,6 +30,15 @@ type ListingDbRow = {
   agency?: AgencyRow | null;
 };
 
+const ENERGY_SET = new Set(["A", "B", "C", "D", "E", "F"] as const);
+type EnergyClass = "A" | "B" | "C" | "D" | "E" | "F";
+
+function toEnergyClass(v: unknown): EnergyClass {
+  if (typeof v !== "string") return "D";
+  const t = v.trim().toUpperCase();
+  return ENERGY_SET.has(t as EnergyClass) ? (t as EnergyClass) : "D";
+}
+
 function mapDbToUi(row: ListingDbRow): Listing {
   return {
     id: row.id,
@@ -48,7 +57,8 @@ function mapDbToUi(row: ListingDbRow): Listing {
         : row.condition === "RENOVATED"
         ? "Renovated"
         : "Good",
-    energyClass: row.energyClass,
+    // ✅ clamp string -> union
+    energyClass: toEnergyClass(row.energyClass),
     images: (row.media ?? [])
       .slice()
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
@@ -74,7 +84,6 @@ export default async function ListingDetail({
   const { id } = await params;
 
   // IMPORTANT: getListingById must include media relation (ListingMedia) in its query.
-  // Your UI already reads row.media, so we just rely on that.
   const row = (await getListingById(id)) as ListingDbRow | null;
   if (!row) return notFound();
 
@@ -91,9 +100,7 @@ export default async function ListingDetail({
           {listing.commune} • {listing.sizeSqm} m² • {listing.bedrooms} BR
         </p>
 
-        <p className="text-sm text-muted-foreground">
-          Listed by {listing.agencyName}
-        </p>
+        <p className="text-sm text-muted-foreground">Listed by {listing.agencyName}</p>
 
         <p className="text-xl font-bold">{formatEUR(listing.price)}</p>
       </div>
@@ -118,8 +125,7 @@ export default async function ListingDetail({
       <section className="space-y-3">
         <h2 className="font-semibold text-lg">AI Summary</h2>
         <p className="text-muted-foreground">
-          This property is rated <strong>{s.grade}</strong> with a score of{" "}
-          {s.score}/100. It is priced{" "}
+          This property is rated <strong>{s.grade}</strong> with a score of {s.score}/100. It is priced{" "}
           {s.vsAvgPct !== null
             ? `${s.vsAvgPct > 0 ? "above" : "below"} commune average`
             : "close to market"}{" "}
@@ -131,9 +137,7 @@ export default async function ListingDetail({
       <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="border rounded-md p-4">
           <p className="text-sm text-muted-foreground">Price per sqm</p>
-          <p className="font-semibold">
-            {s.pricePerSqm.toLocaleString("de-LU")} €/m²
-          </p>
+          <p className="font-semibold">{s.pricePerSqm.toLocaleString("de-LU")} €/m²</p>
         </div>
 
         <div className="border rounded-md p-4">
