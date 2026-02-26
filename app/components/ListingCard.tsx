@@ -1,4 +1,3 @@
-// app/components/ListingCard.tsx
 import Link from "next/link";
 import Image from "next/image";
 import { MapPin, BedDouble, Bath, Ruler } from "lucide-react";
@@ -36,22 +35,6 @@ function humanizeEPC(v: string | null | undefined) {
   };
 
   return map[key] ?? "Energy —";
-}
-
-const EPC_LABELS: Record<string, string> = {
-  A: "Excellent",
-  B: "Very good",
-  C: "Good",
-  D: "Average",
-  E: "Poor",
-  F: "Very poor",
-};
-
-function formatEPC(v: string | null | undefined) {
-  if (!v) return "EPC —";
-  const key = String(v).toUpperCase();
-  const label = EPC_LABELS[key] ?? "—";
-  return `EPC ${key} (${label})`;
 }
 
 export default function ListingCard({
@@ -94,8 +77,8 @@ export default function ListingCard({
         {/* soft gradient for readability */}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/35 via-black/0 to-black/0 opacity-90" />
 
-        {/* top badges */}
-        <div className="absolute left-4 top-4 flex items-center gap-2">
+        {/* top badges (keep clean: SALE/RENT + Energy only) */}
+        <div className="absolute left-4 top-4 flex flex-wrap items-center gap-2">
           {kind ? (
             <Badge className="rounded-full bg-background/85 text-foreground backdrop-blur">
               {String(kind).toUpperCase()}
@@ -111,7 +94,10 @@ export default function ListingCard({
 
         {/* wishlist */}
         <div className="absolute right-4 top-4">
-          <WishlistButtonClient listingId={listing.id} />
+          <WishlistButtonClient
+            listingId={listing.id}
+            initialSaved={Boolean(listing?.isSaved)}
+          />
         </div>
 
         {/* bottom price */}

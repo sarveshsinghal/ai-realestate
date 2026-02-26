@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { normalizeListingImages } from "@/app/components/public/listing-normalize";
 
+import ListingViewTrackerClient from "@/app/components/public/ListingViewTracker.client";
+
 function formatEUR(n: number | null | undefined) {
   if (typeof n !== "number") return "—";
   return new Intl.NumberFormat("de-LU", { style: "currency", currency: "EUR" }).format(n);
@@ -63,6 +65,11 @@ export default async function PublicListingDetailPage({
 
   // Keep drafts hidden publicly
   if (!listing || !listing.isPublished) return notFound();
+
+  // ✅ Track public listing views (client-side; deduped per day in the client component)
+  // Placed AFTER notFound() checks to avoid tracking for non-public/draft listings.
+  // Safe: ListingViewTrackerClient is a Client Component.
+  const viewTracker = <ListingViewTrackerClient listingId={listing.id} />;
 
   const isUnavailable =
     listing.status === "SOLD" ||
@@ -125,6 +132,9 @@ export default async function PublicListingDetailPage({
 
   return (
     <div className="space-y-6">
+      {/* ✅ View tracker */}
+      {viewTracker}
+
       {/* ✅ Sold/Unavailable banner + ✅ Follow similar homes CTA */}
       {isUnavailable ? (
         <div className="rounded-2xl border bg-muted/30 p-4">
@@ -137,8 +147,8 @@ export default async function PublicListingDetailPage({
                 This property is {statusLabel(listing.status)}.
               </div>
               <div className="text-sm text-muted-foreground">
-                You can still view details, but contacting the agency for this listing is disabled. We’ve
-                suggested similar available homes below.
+                You can still view details, but contacting the agency for this listing is disabled.
+                We’ve suggested similar available homes below.
               </div>
 
               {/* ✅ Step 3B: Follow similar homes */}
@@ -219,7 +229,9 @@ export default async function PublicListingDetailPage({
               </div>
               <div>
                 <span className="text-foreground font-medium">Available from:</span>{" "}
-                {listing.availableFrom ? new Date(listing.availableFrom).toLocaleDateString("de-LU") : "—"}
+                {listing.availableFrom
+                  ? new Date(listing.availableFrom).toLocaleDateString("de-LU")
+                  : "—"}
               </div>
               <div>
                 <span className="text-foreground font-medium">Year built:</span>{" "}
@@ -257,14 +269,16 @@ export default async function PublicListingDetailPage({
               <div className="text-sm text-muted-foreground">
                 {commune ? (
                   <>
-                    This property is located in <span className="text-foreground">{commune}</span>.
+                    This property is located in{" "}
+                    <span className="text-foreground">{commune}</span>.
                   </>
                 ) : (
                   <>Location information is not available.</>
                 )}
                 {listing.addressHint ? (
                   <div className="mt-2 text-xs text-muted-foreground">
-                    Address hint: <span className="text-foreground">{listing.addressHint}</span>
+                    Address hint:{" "}
+                    <span className="text-foreground">{listing.addressHint}</span>
                   </div>
                 ) : null}
                 <div className="mt-2 text-xs text-muted-foreground">
@@ -299,9 +313,7 @@ export default async function PublicListingDetailPage({
                       <div className="mt-1 text-xs text-muted-foreground">
                         {l.commune} • {l.bedrooms ?? 0}BR • {l.sizeSqm ?? "—"} sqm
                       </div>
-                      <div className="mt-2 text-sm font-semibold">
-                        {formatEUR(l.price)}
-                      </div>
+                      <div className="mt-2 text-sm font-semibold">{formatEUR(l.price)}</div>
                     </a>
                   ))
                 ) : (
@@ -359,7 +371,13 @@ function AmenityRow({ label, enabled }: { label: string; enabled: boolean }) {
   return (
     <div className="flex items-center justify-between rounded-2xl border bg-background px-4 py-3 text-sm shadow-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className={enabled ? "font-medium text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>
+      <span
+        className={
+          enabled
+            ? "font-medium text-emerald-700 dark:text-emerald-300"
+            : "text-muted-foreground"
+        }
+      >
         {enabled ? "Yes" : "No"}
       </span>
     </div>

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { embedText } from "@/lib/search/embeddings";
+import { getUserContext } from "@/lib/requireUserContext";
 
 export const runtime = "nodejs";
 
@@ -17,12 +18,41 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+/**
+ * pgvector expects: "[1,2,3]" not "{1,2,3}".
+ */
+function toPgVectorLiteral(vec: number[]) {
+  const parts = vec.map((x) => (Number.isFinite(Number(x)) ? String(Number(x)) : "0"));
+  return `[${parts.join(",")}]`;
+}
+
+async function attachUserFlags(listings: any[]) {
+  // Add popularityBadge + isSaved for logged-in users
+  const ctx = await getUserContext(); // null if logged out
+  const ids = listings.map((l) => l.id).filter(Boolean);
+
+  let savedSet = new Set<string>();
+  if (ctx && ids.length) {
+    const saved = await prisma.wishlistItem.findMany({
+      where: { userId: ctx.userId, listingId: { in: ids } },
+      select: { listingId: true },
+    });
+    savedSet = new Set(saved.map((s) => s.listingId));
+  }
+
+  return listings.map((l) => ({
+    ...l,
+    popularityBadge: l?.popularity?.badge ?? l?.popularityBadge ?? "NONE",
+    isSaved: savedSet.has(l.id),
+  }));
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
   const q = (searchParams.get("q") ?? "").trim();
   const commune = (searchParams.get("commune") ?? "").trim();
-  const kind = (searchParams.get("kind") ?? "").trim(); // SALE | RENT
+  const kind = (searchParams.get("kind") ?? "").trim();
   const propertyType = (searchParams.get("propertyType") ?? "").trim();
 
   const bedrooms = toInt(searchParams.get("bedrooms"), null);
@@ -70,11 +100,13 @@ export async function GET(req: Request) {
   // -----------------------------
   if (q.length >= 2) {
     try {
-      let qv: number[] | null = null;
+      let qvLiteral: string | null = null;
       try {
-        qv = (await embedText(q)).vector;
+        const raw = (await embedText(q)).vector as any;
+        const arr = Array.isArray(raw) ? raw.map(Number).filter(Number.isFinite) : [];
+        if (arr.length === 1536) qvLiteral = toPgVectorLiteral(arr);
       } catch {
-        qv = null;
+        qvLiteral = null;
       }
 
       const communes = commune ? [commune] : null;
@@ -84,7 +116,7 @@ export async function GET(req: Request) {
         with params as (
           select
             ${q}::text as q,
-            ${qv ? (qv as any) : null}::vector(1536) as qv,
+            ${qvLiteral}::vector(1536) as qv,
             ${minPrice}::int as min_price,
             ${maxPrice}::int as max_price,
             ${bedrooms}::int as bedrooms_min,
@@ -144,33 +176,32 @@ export async function GET(req: Request) {
       `;
 
       const ids = rows.map((r) => r.listingId);
-
       if (ids.length) {
         const listings = await prisma.listing.findMany({
-          where: { id: { in: ids }, isPublished: true, status: "ACTIVE" }, // ✅ enforce ACTIVE
+          where: { id: { in: ids }, isPublished: true, status: "ACTIVE" },
           include: {
             media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
+            popularity: { select: { badge: true, score7d: true } },
           },
         });
 
         const byId = new Map(listings.map((l: any) => [l.id, l]));
         const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
 
+        const items = await attachUserFlags(ordered);
+
         return NextResponse.json({
-          items: ordered,
+          items,
           nextCursor: { offset: offset + take },
-          hasMore: ordered.length === take,
+          hasMore: items.length === take,
           meta: { mode: "hybrid" },
         });
       }
-      // If index returned nothing, fall through to Prisma fallback
     } catch (e) {
       console.error("[public/listings] hybrid failed, falling back to prisma:", e);
     }
 
-    // -----------------------------
-    // 2) Fallback: Prisma contains search
-    // -----------------------------
+    // fallback prisma search
     const fallbackWhere: any = {
       ...where,
       OR: [
@@ -184,20 +215,23 @@ export async function GET(req: Request) {
       sort === "newest"
         ? { updatedAt: "desc" }
         : sort === "price_low"
-        ? { price: "asc" }
-        : sort === "price_high"
-        ? { price: "desc" }
-        : { updatedAt: "desc" };
+          ? { price: "asc" }
+          : sort === "price_high"
+            ? { price: "desc" }
+            : { updatedAt: "desc" };
 
-    const items = await prisma.listing.findMany({
+    const rawItems = await prisma.listing.findMany({
       where: fallbackWhere,
       orderBy: fallbackOrderBy,
       skip: offset,
       take,
       include: {
         media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
+        popularity: { select: { badge: true, score7d: true } },
       },
     });
+
+    const items = await attachUserFlags(rawItems);
 
     return NextResponse.json({
       items,
@@ -208,26 +242,29 @@ export async function GET(req: Request) {
   }
 
   // -----------------------------
-  // 3) No q: normal DB ordering
+  // 2) No q: normal DB ordering
   // -----------------------------
   const orderBy: any =
     sort === "newest"
       ? { updatedAt: "desc" }
       : sort === "price_low"
-      ? { price: "asc" }
-      : sort === "price_high"
-      ? { price: "desc" }
-      : { updatedAt: "desc" };
+        ? { price: "asc" }
+        : sort === "price_high"
+          ? { price: "desc" }
+          : { updatedAt: "desc" };
 
-  const items = await prisma.listing.findMany({
+  const rawItems = await prisma.listing.findMany({
     where,
     orderBy,
     skip: offset,
     take,
     include: {
       media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
+      popularity: { select: { badge: true, score7d: true } },
     },
   });
+
+  const items = await attachUserFlags(rawItems);
 
   return NextResponse.json({
     items,

@@ -7,10 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { prisma } from "@/lib/prisma";
 import ListingCard from "@/app/components/ListingCard";
 import AISearchBar from "@/app/components/AISearchBar";
+import { getUserContext } from "@/lib/requireUserContext";
 
 export default async function HomePage() {
-  const featured = await prisma.listing.findMany({
-    where: { isPublished: true },
+  const ctx = await getUserContext();
+  const userId = ctx?.userId ?? null;
+
+  const featuredRaw = await prisma.listing.findMany({
+    where: { isPublished: true, status: "ACTIVE" },
     orderBy: [{ updatedAt: "desc" }],
     take: 6,
     include: {
@@ -19,8 +23,21 @@ export default async function HomePage() {
         take: 1,
         select: { url: true, sortOrder: true },
       },
+      popularity: { select: { badge: true } }, // ✅ include popularity
+      wishlistItems: userId
+        ? { where: { userId }, select: { id: true }, take: 1 }
+        : false,
     },
   });
+
+  // ✅ Normalize shape for ListingCard
+  const featured = featuredRaw.map((l: any) => ({
+    ...l,
+    isSaved: userId ? (l.wishlistItems?.length ?? 0) > 0 : false,
+    popularityBadge: l?.popularity?.badge ?? "NONE", // ✅ critical fix
+    wishlistItems: undefined,
+    popularity: undefined,
+  }));
 
   return (
     <div className="space-y-10">
@@ -41,8 +58,8 @@ export default async function HomePage() {
             </h1>
 
             <p className="max-w-xl text-pretty text-sm leading-relaxed text-muted-foreground sm:text-base">
-              Search naturally in English, French, German, or Luxembourgish. EstateIQ ranks results
-              using semantic understanding + filters.
+              Search naturally in English, French, German, or Luxembourgish.
+              EstateIQ ranks results using semantic understanding + filters.
             </p>
 
             <AISearchBar />
@@ -107,7 +124,9 @@ export default async function HomePage() {
         <div className="flex items-end justify-between gap-4">
           <div>
             <h2 className="text-xl font-semibold tracking-tight">Featured listings</h2>
-            <p className="text-sm text-muted-foreground">Recently updated, published listings.</p>
+            <p className="text-sm text-muted-foreground">
+              Recently updated, published listings.
+            </p>
           </div>
           <Button asChild variant="outline" className="rounded-full">
             <Link href="/listings">View all</Link>
@@ -116,7 +135,11 @@ export default async function HomePage() {
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {featured.map((listing: any) => (
-            <ListingCard key={listing.id} listing={listing} href={`/listing/${listing.id}`} />
+            <ListingCard
+              key={listing.id}
+              listing={listing}
+              href={`/listing/${listing.id}`}
+            />
           ))}
         </div>
       </section>

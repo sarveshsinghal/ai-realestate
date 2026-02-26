@@ -1,10 +1,11 @@
-// app/components/SiteHeader.tsx
 "use client";
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Menu, Search, SlidersHorizontal } from "lucide-react";
+import PublicAuthButtonClient from "@/app/components/public/PublicAuthButton.client";
+import SavedLinkClient from "@/app/components/public/SavedLink.client";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,9 +105,15 @@ export default function SiteHeader() {
           <Button asChild variant="ghost" className="rounded-full">
             <Link href="/listings">Browse</Link>
           </Button>
+
+          {/* ✅ Saved link + count (only when signed in) */}
+          <SavedLinkClient />
+
           <Button asChild variant="ghost" className="rounded-full">
             <Link href="/agency">Agency</Link>
           </Button>
+
+          <PublicAuthButtonClient />
         </nav>
 
         {/* Mobile menu */}
@@ -136,6 +143,7 @@ export default function SiteHeader() {
                     className="h-11 rounded-full pl-9"
                   />
                 </div>
+
                 <Button
                   className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white"
                   onClick={submitSearch}
@@ -148,9 +156,19 @@ export default function SiteHeader() {
                   <Button asChild variant="secondary" className="w-full rounded-full">
                     <Link href="/listings">Browse listings</Link>
                   </Button>
+
+                  {/* ✅ Saved link + count (only when signed in) */}
+                  <div>
+                    <SavedLinkClient />
+                  </div>
+
                   <Button asChild variant="outline" className="w-full rounded-full">
                     <Link href="/agency">Agency portal</Link>
                   </Button>
+
+                  <div className="pt-2">
+                    <PublicAuthButtonClient />
+                  </div>
                 </div>
               </div>
             </SheetContent>

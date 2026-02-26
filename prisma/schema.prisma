@@ -106,6 +106,10 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships AgencyMember[]
+
+  // ✅ Added opposite relations (required by Prisma)
+  wishlistItems     WishlistItem[]
+  listingViewEvents ListingViewEvent[]
 }
 
 model Agency {
@@ -171,8 +175,8 @@ model Listing {
   yearBuilt     Int?
   floor         Int?
   totalFloors   Int?
-  furnished     Boolean?  @default(false)
-  petsAllowed   Boolean?  @default(false)
+  furnished     Boolean? @default(false)
+  petsAllowed   Boolean? @default(false)
 
   // ✅ NEW: amenities + parking
   hasElevator   Boolean? @default(false)
@@ -203,21 +207,22 @@ model Listing {
 
   // ✅ lifecycle
   status     ListingStatus @default(ACTIVE)
-  // soldAt     DateTime?
-  // archivedAt DateTime?
-  soldAt     DateTime? @db.Timestamptz(3)
-  archivedAt DateTime? @db.Timestamptz(3)
+  soldAt     DateTime?     @db.Timestamptz(3)
+  archivedAt DateTime?     @db.Timestamptz(3)
   soldReason String? // "sold" | "rented" | "withdrawn" (free text for MVP)
 
-  // createdAt DateTime @default(now())
-  // updatedAt DateTime @updatedAt
-  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   media        ListingMedia[]
   priceHistory ListingPriceHistory[]
   leads        Lead[]
   matches      LeadMatch[]
+
+  // ✅ Added opposite relations (required by Prisma)
+  wishlistItems WishlistItem[]
+  viewEvents    ListingViewEvent[]
+  popularity    ListingPopularity?
 
   @@index([commune])
   @@index([price])
@@ -289,8 +294,8 @@ model ListingSearchIndex {
   status     String
   searchText String
   embedding  Unsupported("vector(1536)")?
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
-  tsv Unsupported("tsvector")?
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+  tsv        Unsupported("tsvector")?
 
   price        Int?
   bedrooms     Int?
@@ -330,7 +335,7 @@ model BuyerProfile {
   bedroomsMin  Int?
   bedroomsMax  Int?
   bathroomsMin Int?
-  communes  String[] @default([]) // matches DB default ARRAY[]::text[]
+  communes     String[] @default([]) // matches DB default ARRAY[]::text[]
 
   // Amenities as requirements (hard filters)
   furnished   Boolean?
@@ -408,7 +413,6 @@ model LeadMatch {
   @@index([scope])
 }
 
-
 model SimilarFollowRule {
   id           String   @id @default(cuid())
   buyerId      String
@@ -432,7 +436,6 @@ model WishlistItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // relations
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
@@ -444,8 +447,8 @@ model WishlistItem {
 model ListingViewEvent {
   id        String   @id @default(cuid())
   listingId String
-  userId    String?  // nullable: not all viewers are logged in
-  sessionId String?  // best-effort dedupe
+  userId    String? // nullable: not all viewers are logged in
+  sessionId String? // best-effort dedupe
   createdAt DateTime @default(now())
 
   listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
@@ -457,16 +460,16 @@ model ListingViewEvent {
 }
 
 model ListingPopularity {
-  id         String      @id @default(cuid())
-  listingId  String      @unique
-  score7d    Float       @default(0)
-  views7d    Int         @default(0)
-  saves7d    Int         @default(0)
-  leads7d    Int         @default(0)
+  id         String       @id @default(cuid())
+  listingId  String       @unique
+  score7d    Float        @default(0)
+  views7d    Int          @default(0)
+  saves7d    Int          @default(0)
+  leads7d    Int          @default(0)
   badge      ListingBadge @default(NONE)
-  segmentKey String      @default("") // e.g. kind|propertyType|commune
-  updatedAt  DateTime    @updatedAt
-  createdAt  DateTime    @default(now())
+  segmentKey String       @default("") // e.g. kind|propertyType|commune
+  updatedAt  DateTime     @updatedAt
+  createdAt  DateTime     @default(now())
 
   listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
