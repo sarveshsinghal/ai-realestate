@@ -18,17 +18,13 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-/**
- * pgvector expects: "[1,2,3]" not "{1,2,3}".
- */
 function toPgVectorLiteral(vec: number[]) {
   const parts = vec.map((x) => (Number.isFinite(Number(x)) ? String(Number(x)) : "0"));
   return `[${parts.join(",")}]`;
 }
 
 async function attachUserFlags(listings: any[]) {
-  // Add popularityBadge + isSaved for logged-in users
-  const ctx = await getUserContext(); // null if logged out
+  const ctx = await getUserContext();
   const ids = listings.map((l) => l.id).filter(Boolean);
 
   let savedSet = new Set<string>();
@@ -44,8 +40,33 @@ async function attachUserFlags(listings: any[]) {
     ...l,
     popularityBadge: l?.popularity?.badge ?? l?.popularityBadge ?? "NONE",
     isSaved: savedSet.has(l.id),
+    // optional convenience flag for UI
+    isBoosted:
+      l?.boost?.endsAt ? new Date(l.boost.endsAt).getTime() > Date.now() : false,
   }));
 }
+
+function getOrderBy(sort: string) {
+  if (sort === "recommended") {
+    return [
+      { popularity: { score7d: "desc" as const } },
+      { popularity: { saves7d: "desc" as const } },
+      { updatedAt: "desc" as const },
+    ];
+  }
+
+  if (sort === "newest") return { updatedAt: "desc" as const };
+  if (sort === "price_low") return { price: "asc" as const };
+  if (sort === "price_high") return { price: "desc" as const };
+
+  return { updatedAt: "desc" as const };
+}
+
+const includePublic = {
+  media: { orderBy: { sortOrder: "asc" as const }, select: { url: true, sortOrder: true } },
+  popularity: { select: { badge: true, score7d: true, saves7d: true } },
+  boost: { select: { level: true, startsAt: true, endsAt: true } }, // ✅ added
+};
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -62,6 +83,7 @@ export async function GET(req: Request) {
   const maxSize = toInt(searchParams.get("maxSize"), null);
 
   const sort = (searchParams.get("sort") ?? "recommended").trim();
+  const badge = (searchParams.get("badge") ?? "").trim();
   const take = clamp(toInt(searchParams.get("take"), 18) ?? 18, 6, 30);
 
   let offset = 0;
@@ -75,7 +97,6 @@ export async function GET(req: Request) {
     }
   }
 
-  // ✅ Always enforce public visibility + ACTIVE lifecycle
   const where: any = { isPublished: true, status: "ACTIVE" };
 
   if (commune) where.commune = { contains: commune, mode: "insensitive" };
@@ -95,8 +116,12 @@ export async function GET(req: Request) {
     if (typeof maxSize === "number") where.sizeSqm.lte = maxSize;
   }
 
+  if (badge) {
+    where.popularity = { is: { badge } };
+  }
+
   // -----------------------------
-  // 1) If q exists: TRY hybrid index first
+  // 1) q exists => hybrid first
   // -----------------------------
   if (q.length >= 2) {
     try {
@@ -111,6 +136,14 @@ export async function GET(req: Request) {
 
       const communes = commune ? [commune] : null;
       const propertyTypes = propertyType ? [propertyType] : null;
+
+      const POP_K = 50;
+      const POP_WEIGHT = 0.08;
+
+      const SAVE_K = 4;
+      const SAVE_WEIGHT = 0.10;
+
+      const BOOST_WEIGHT = 0.35;
 
       const rows = await prisma.$queryRaw<Array<{ listingId: string; score: number }>>`
         with params as (
@@ -163,14 +196,45 @@ export async function GET(req: Request) {
             vec.vec_dist as vec_dist
           from fts
           full outer join vec using ("listingId")
+        ),
+        pop as (
+          select lp."listingId", coalesce(lp."score7d", 0)::float8 as score7d
+          from "ListingPopularity" lp
+        ),
+        saves as (
+          select wi."listingId", count(*)::float8 as saves7d
+          from "WishlistItem" wi
+          where wi."createdAt" >= now() - interval '7 days'
+          group by wi."listingId"
+        ),
+        boost as (
+          select
+            b."listingId",
+            case
+              when now() between b."startsAt" and b."endsAt" then
+                case b."level"
+                  when 'BASIC' then 0.45
+                  when 'PREMIUM' then 0.70
+                  when 'PLATINUM' then 1.00
+                  else 0
+                end
+              else 0
+            end::float8 as boost_scalar
+          from "ListingBoost" b
         )
         select
           c."listingId",
           (
             0.45 * c.fts_rank
             + 0.55 * coalesce((1.0 / (1.0 + c.vec_dist)), 0)
+            + ${POP_WEIGHT} * (1.0 - exp( -coalesce(p.score7d, 0) / ${POP_K} ))
+            + ${SAVE_WEIGHT} * (1.0 - exp( -coalesce(s.saves7d, 0) / ${SAVE_K} ))
+            + ${BOOST_WEIGHT} * coalesce(x.boost_scalar, 0)
           )::float8 as score
         from candidates c
+        left join pop p on p."listingId" = c."listingId"
+        left join saves s on s."listingId" = c."listingId"
+        left join boost x on x."listingId" = c."listingId"
         order by score desc
         limit ${take} offset ${offset};
       `;
@@ -179,10 +243,7 @@ export async function GET(req: Request) {
       if (ids.length) {
         const listings = await prisma.listing.findMany({
           where: { id: { in: ids }, isPublished: true, status: "ACTIVE" },
-          include: {
-            media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
-            popularity: { select: { badge: true, score7d: true } },
-          },
+          include: includePublic,
         });
 
         const byId = new Map(listings.map((l: any) => [l.id, l]));
@@ -211,24 +272,12 @@ export async function GET(req: Request) {
       ],
     };
 
-    const fallbackOrderBy: any =
-      sort === "newest"
-        ? { updatedAt: "desc" }
-        : sort === "price_low"
-          ? { price: "asc" }
-          : sort === "price_high"
-            ? { price: "desc" }
-            : { updatedAt: "desc" };
-
     const rawItems = await prisma.listing.findMany({
       where: fallbackWhere,
-      orderBy: fallbackOrderBy,
+      orderBy: getOrderBy(sort),
       skip: offset,
       take,
-      include: {
-        media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
-        popularity: { select: { badge: true, score7d: true } },
-      },
+      include: includePublic,
     });
 
     const items = await attachUserFlags(rawItems);
@@ -242,26 +291,101 @@ export async function GET(req: Request) {
   }
 
   // -----------------------------
-  // 2) No q: normal DB ordering
+  // 2) No q: browsing mode
   // -----------------------------
-  const orderBy: any =
-    sort === "newest"
-      ? { updatedAt: "desc" }
-      : sort === "price_low"
-        ? { price: "asc" }
-        : sort === "price_high"
-          ? { price: "desc" }
-          : { updatedAt: "desc" };
 
+  // ✅ Boost-first Recommended browsing
+  if (sort === "recommended") {
+    const rows = await prisma.$queryRaw<Array<{ listingId: string }>>`
+      with params as (
+        select
+          ${commune || null}::text as commune,
+          ${kind || null}::text as kind,
+          ${propertyType || null}::text as property_type,
+          ${bedrooms}::int as bedrooms_min,
+          ${minPrice}::int as min_price,
+          ${maxPrice}::int as max_price,
+          ${minSize}::int as min_size,
+          ${maxSize}::int as max_size,
+          ${badge || null}::text as badge
+      ),
+      filtered as (
+        select
+          l.id as "listingId",
+          case when b."listingId" is null then 0 else 1 end as boost_active,
+          (case b."level"
+            when 'PLATINUM' then 3
+            when 'PREMIUM' then 2
+            when 'BASIC' then 1
+            else 0 end
+          ) as boost_level_rank,
+          coalesce(p."score7d", 0) as score7d,
+          coalesce(p."saves7d", 0) as saves7d,
+          l."updatedAt" as updatedAt
+        from "Listing" l
+        left join "ListingBoost" b
+          on b."listingId" = l.id
+         and now() between b."startsAt" and b."endsAt"
+        left join "ListingPopularity" p on p."listingId" = l.id
+        , params pa
+        where l."isPublished" = true
+          and l."status" = 'ACTIVE'
+          and (pa.commune is null or l.commune ilike ('%' || pa.commune || '%'))
+          and (pa.kind is null or l.kind::text = pa.kind) -- ✅ FIX
+          and (pa.property_type is null or l."propertyType"::text = pa.property_type) -- ✅ FIX
+          and (pa.bedrooms_min is null or l.bedrooms >= pa.bedrooms_min)
+          and (pa.min_price is null or l.price >= pa.min_price)
+          and (pa.max_price is null or l.price <= pa.max_price)
+          and (pa.min_size is null or l."sizeSqm" >= pa.min_size)
+          and (pa.max_size is null or l."sizeSqm" <= pa.max_size)
+          and (pa.badge is null or p.badge::text = pa.badge) -- ✅ FIX
+      )
+      select "listingId"
+      from filtered
+      order by
+        boost_active desc,
+        boost_level_rank desc,
+        score7d desc,
+        saves7d desc,
+        updatedAt desc
+      limit ${take} offset ${offset};
+    `;
+
+    const ids = rows.map((r) => r.listingId);
+    if (!ids.length) {
+      return NextResponse.json({
+        items: [],
+        nextCursor: { offset: offset + take },
+        hasMore: false,
+        meta: { mode: "db_boosted" },
+      });
+    }
+
+    const listings = await prisma.listing.findMany({
+      where: { id: { in: ids }, isPublished: true, status: "ACTIVE" },
+      include: includePublic,
+    });
+
+    const byId = new Map(listings.map((l: any) => [l.id, l]));
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+
+    const items = await attachUserFlags(ordered);
+
+    return NextResponse.json({
+      items,
+      nextCursor: { offset: offset + take },
+      hasMore: items.length === take,
+      meta: { mode: "db_boosted" },
+    });
+  }
+
+  // Other sorts: normal Prisma ordering
   const rawItems = await prisma.listing.findMany({
     where,
-    orderBy,
+    orderBy: getOrderBy(sort),
     skip: offset,
     take,
-    include: {
-      media: { orderBy: { sortOrder: "asc" }, select: { url: true, sortOrder: true } },
-      popularity: { select: { badge: true, score7d: true } },
-    },
+    include: includePublic,
   });
 
   const items = await attachUserFlags(rawItems);

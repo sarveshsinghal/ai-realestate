@@ -60,7 +60,8 @@ export default function ListingsFiltersBar() {
     p.delete("cursor");
 
     const qs = p.toString();
-    return qs ? `/listings?${qs}` : "/listings";
+    const basePath = window.location.pathname.startsWith("/hot") ? "/hot" : "/listings";
+    return qs ? `${basePath}?${qs}` : basePath;
   }, [
     sp,
     q,

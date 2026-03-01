@@ -29,6 +29,15 @@ export default async function AgencyListingsPage() {
       archivedAt: true,
       soldReason: true,
 
+      // ✅ Boost info (NEW)
+      boost: {
+        select: {
+          level: true,
+          startsAt: true,
+          endsAt: true,
+        },
+      },
+
       media: {
         select: { url: true, sortOrder: true },
         orderBy: { sortOrder: "asc" },
@@ -86,7 +95,6 @@ export default async function AgencyListingsPage() {
             <StatPill label="Published" value={stats.published} tone="positive" />
             <StatPill label="Draft" value={stats.draft} tone="neutral" />
 
-            {/* ✅ lifecycle quick view */}
             <StatPill label="Active" value={stats.active} tone="positive" />
             <StatPill label="Sold/Unavail." value={stats.soldOrUnavailable} tone="neutral" />
             <StatPill label="Archived" value={stats.archived} tone="neutral" />

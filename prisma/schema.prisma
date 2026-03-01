@@ -95,6 +95,29 @@ enum ListingBadge {
   MOST_VIEWED
 }
 
+enum BoostLevel {
+  BASIC
+  PREMIUM
+  PLATINUM
+}
+
+model ListingBoost {
+  id        String     @id @default(cuid())
+  listingId String     @unique
+  level     BoostLevel @default(BASIC)
+
+  startsAt DateTime @default(now())
+  endsAt   DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([endsAt])
+  @@index([level, endsAt])
+}
+
 model User {
   id             String @id @default(cuid())
   // Link this to Supabase auth.users.id (uuid)
@@ -175,8 +198,8 @@ model Listing {
   yearBuilt     Int?
   floor         Int?
   totalFloors   Int?
-  furnished     Boolean? @default(false)
-  petsAllowed   Boolean? @default(false)
+  furnished     Boolean?  @default(false)
+  petsAllowed   Boolean?  @default(false)
 
   // ✅ NEW: amenities + parking
   hasElevator   Boolean? @default(false)
@@ -195,6 +218,8 @@ model Listing {
   // ✅ NEW: optional geodata (future map search)
   latitude  Float?
   longitude Float?
+
+  boost ListingBoost?
 
   // Make nullable to allow seed/backfill before agency linkage
   agencyId String?
@@ -294,7 +319,7 @@ model ListingSearchIndex {
   status     String
   searchText String
   embedding  Unsupported("vector(1536)")?
-  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+  updatedAt  DateTime                     @updatedAt @db.Timestamptz(3)
   tsv        Unsupported("tsvector")?
 
   price        Int?

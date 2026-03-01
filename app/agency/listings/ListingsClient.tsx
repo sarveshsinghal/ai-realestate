@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ListingLifecycle = "ACTIVE" | "SOLD" | "UNAVAILABLE" | "ARCHIVED";
+type BoostLevel = "BASIC" | "PREMIUM" | "PLATINUM";
 
 type Row = {
   id: string;
@@ -24,6 +25,13 @@ type Row = {
   soldAt?: Date | string | null;
   archivedAt?: Date | string | null;
   soldReason?: string | null;
+
+  // ✅ boost (NEW)
+  boost?: {
+    level: BoostLevel;
+    startsAt: Date | string;
+    endsAt: Date | string;
+  } | null;
 
   media: { url: string; sortOrder: number }[];
 
@@ -53,6 +61,18 @@ function safeDate(d: unknown): Date | null {
   return Number.isNaN(+dt) ? null : dt;
 }
 
+function isBoostActive(boost: Row["boost"]) {
+  const ends = safeDate(boost?.endsAt);
+  if (!ends) return false;
+  return ends.getTime() > Date.now();
+}
+
+function boostPillTone(level: BoostLevel) {
+  if (level === "PLATINUM") return "border-purple-200 bg-purple-50 text-purple-900";
+  if (level === "PREMIUM") return "border-amber-200 bg-amber-50 text-amber-950";
+  return "border-sky-200 bg-sky-50 text-sky-900";
+}
+
 type ToastTone = "success" | "error" | "info";
 type ToastItem = {
   id: string;
@@ -78,6 +98,10 @@ type PublishState = {
   soldReasonById: Record<string, string | null | undefined>;
   setSoldReason: (id: string, v: string | null | undefined) => void;
 
+  // ✅ boost local store
+  boostById: Record<string, Row["boost"]>;
+  setBoost: (id: string, v: Row["boost"]) => void;
+
   loadingById: Record<string, boolean>;
   setLoading: (id: string, v: boolean) => void;
 
@@ -89,6 +113,22 @@ function lifecycleLabel(s: ListingLifecycle) {
   if (s === "SOLD") return "Sold";
   if (s === "UNAVAILABLE") return "Unavailable";
   return "Archived";
+}
+
+async function apiBoostApply(listingId: string, level: BoostLevel, days: number) {
+  const res = await fetch(`/api/agency/listings/${listingId}/boost`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ level, days }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function apiBoostRemove(listingId: string) {
+  const res = await fetch(`/api/agency/listings/${listingId}/boost`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
 export default function ListingsClient({
@@ -106,9 +146,7 @@ export default function ListingsClient({
     "ALL" | "ACTIVE" | "SOLD" | "UNAVAILABLE" | "ARCHIVED"
   >("ALL");
 
-  const [sort, setSort] = useState<
-    "NEWEST" | "OLDEST" | "PRICE_HIGH" | "PRICE_LOW"
-  >("NEWEST");
+  const [sort, setSort] = useState<"NEWEST" | "OLDEST" | "PRICE_HIGH" | "PRICE_LOW">("NEWEST");
   const [selected, setSelected] = useState<Row | null>(null);
 
   // Toasts
@@ -120,7 +158,6 @@ export default function ListingsClient({
     const item: ToastItem = { id, createdAt: Date.now(), ...t };
     setToasts((prev) => [item, ...prev].slice(0, 4));
 
-    // auto-dismiss
     const ms = t.tone === "error" ? 4500 : 2800;
     const timer = window.setTimeout(() => {
       setToasts((prev) => prev.filter((x) => x.id !== id));
@@ -139,18 +176,23 @@ export default function ListingsClient({
   }, []);
 
   // Local store so toggles update UI immediately
-  const [publishedById, setPublishedById] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(listings.map((l) => [l.id, Boolean(l.isPublished)]))
+  const [publishedById, setPublishedById] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(listings.map((l) => [l.id, Boolean(l.isPublished)]))
   );
 
   // ✅ lifecycle local store
-  const [lifecycleById, setLifecycleById] = useState<
-    Record<string, ListingLifecycle>
-  >(() => Object.fromEntries(listings.map((l) => [l.id, l.status ?? "ACTIVE"])));
+  const [lifecycleById, setLifecycleById] = useState<Record<string, ListingLifecycle>>(() =>
+    Object.fromEntries(listings.map((l) => [l.id, l.status ?? "ACTIVE"]))
+  );
 
-  const [soldReasonById, setSoldReasonById] = useState<
-    Record<string, string | null | undefined>
-  >(() => Object.fromEntries(listings.map((l) => [l.id, l.soldReason ?? null])));
+  const [soldReasonById, setSoldReasonById] = useState<Record<string, string | null | undefined>>(
+    () => Object.fromEntries(listings.map((l) => [l.id, l.soldReason ?? null]))
+  );
+
+  // ✅ boost local store
+  const [boostById, setBoostById] = useState<Record<string, Row["boost"]>>(() =>
+    Object.fromEntries(listings.map((l) => [l.id, l.boost ?? null]))
+  );
 
   // Row-level loading store
   const [loadingById, setLoadingById] = useState<Record<string, boolean>>({});
@@ -174,6 +216,12 @@ export default function ListingsClient({
       for (const l of listings) next[l.id] = l.soldReason ?? null;
       return next;
     });
+
+    setBoostById((prev) => {
+      const next: Record<string, Row["boost"]> = { ...prev };
+      for (const l of listings) next[l.id] = l.boost ?? null;
+      return next;
+    });
   }, [listings]);
 
   const publishState: PublishState = useMemo(
@@ -187,11 +235,14 @@ export default function ListingsClient({
       soldReasonById,
       setSoldReason: (id, v) => setSoldReasonById((m) => ({ ...m, [id]: v })),
 
+      boostById,
+      setBoost: (id, v) => setBoostById((m) => ({ ...m, [id]: v })),
+
       loadingById,
       setLoading: (id, v) => setLoadingById((m) => ({ ...m, [id]: v })),
       toast,
     }),
-    [publishedById, lifecycleById, soldReasonById, loadingById]
+    [publishedById, lifecycleById, soldReasonById, boostById, loadingById]
   );
 
   // One source of truth for “effective” publish state
@@ -199,9 +250,7 @@ export default function ListingsClient({
     const map = new Map<string, boolean>();
     for (const l of listings) {
       const v =
-        typeof publishedById[l.id] === "boolean"
-          ? publishedById[l.id]
-          : Boolean(l.isPublished);
+        typeof publishedById[l.id] === "boolean" ? publishedById[l.id] : Boolean(l.isPublished);
       map.set(l.id, v);
     }
     return map;
@@ -211,46 +260,36 @@ export default function ListingsClient({
   const effectiveLifecycle = useMemo(() => {
     const map = new Map<string, ListingLifecycle>();
     for (const l of listings) {
-      const v =
-        typeof lifecycleById[l.id] === "string"
-          ? lifecycleById[l.id]
-          : (l.status ?? "ACTIVE");
+      const v = typeof lifecycleById[l.id] === "string" ? lifecycleById[l.id] : l.status ?? "ACTIVE";
       map.set(l.id, v as ListingLifecycle);
     }
     return map;
   }, [listings, lifecycleById]);
 
-  // Live counts (unused currently but kept)
-  const counts = useMemo(() => {
-    let published = 0;
-    let draft = 0;
+  // ✅ effective boost
+  const effectiveBoost = useMemo(() => {
+    const map = new Map<string, Row["boost"]>();
     for (const l of listings) {
-      const isPub = effectivePublished.get(l.id) ?? Boolean(l.isPublished);
-      if (isPub) published++;
-      else draft++;
+      const v = Object.prototype.hasOwnProperty.call(boostById, l.id) ? boostById[l.id] : l.boost ?? null;
+      map.set(l.id, v ?? null);
     }
-    return { total: listings.length, published, draft };
-  }, [listings, effectivePublished]);
+    return map;
+  }, [listings, boostById]);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
     let rows = listings.slice();
 
-    const isPub = (id: string, fallback: boolean) =>
-      effectivePublished.get(id) ?? fallback;
-
+    const isPub = (id: string, fallback: boolean) => effectivePublished.get(id) ?? fallback;
     const life = (id: string, fallback: ListingLifecycle) =>
       (effectiveLifecycle.get(id) ?? fallback) as ListingLifecycle;
 
     if (status !== "ALL") {
       rows = rows.filter((r) =>
-        status === "PUBLISHED"
-          ? isPub(r.id, r.isPublished)
-          : !isPub(r.id, r.isPublished)
+        status === "PUBLISHED" ? isPub(r.id, r.isPublished) : !isPub(r.id, r.isPublished)
       );
     }
 
-    // ✅ lifecycle filter
     if (lifecycle !== "ALL") {
       rows = rows.filter((r) => life(r.id, r.status) === lifecycle);
     }
@@ -261,20 +300,13 @@ export default function ListingsClient({
         const c = (r.commune ?? "").toLowerCase();
         const pt = (r.propertyType ?? "").toLowerCase();
         const k = (r.kind ?? "").toLowerCase();
-        return (
-          t.includes(query) ||
-          c.includes(query) ||
-          pt.includes(query) ||
-          k.includes(query)
-        );
+        return t.includes(query) || c.includes(query) || pt.includes(query) || k.includes(query);
       });
     }
 
     rows.sort((a, b) => {
-      if (sort === "NEWEST")
-        return +new Date(b.createdAt) - +new Date(a.createdAt);
-      if (sort === "OLDEST")
-        return +new Date(a.createdAt) - +new Date(b.createdAt);
+      if (sort === "NEWEST") return +new Date(b.createdAt) - +new Date(a.createdAt);
+      if (sort === "OLDEST") return +new Date(a.createdAt) - +new Date(b.createdAt);
       if (sort === "PRICE_HIGH") return (b.price ?? 0) - (a.price ?? 0);
       return (a.price ?? 0) - (b.price ?? 0);
     });
@@ -283,10 +315,7 @@ export default function ListingsClient({
   }, [listings, q, status, lifecycle, sort, effectivePublished, effectiveLifecycle]);
 
   const hasFilters =
-    q.trim().length > 0 ||
-    status !== "ALL" ||
-    lifecycle !== "ALL" ||
-    sort !== "NEWEST";
+    q.trim().length > 0 || status !== "ALL" || lifecycle !== "ALL" || sort !== "NEWEST";
 
   function clearFilters() {
     setQ("");
@@ -304,30 +333,54 @@ export default function ListingsClient({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Keep drawer selection in sync with effective publish/lifecycle changes
+  // Keep drawer selection in sync with effective publish/lifecycle/boost changes
   useEffect(() => {
-    if (!selected) return;
+    const id = selected?.id;
+    if (!id) return;
 
-    const pub = effectivePublished.get(selected.id);
-    const life = effectiveLifecycle.get(selected.id);
+    const pub = effectivePublished.get(id);
+    const life = effectiveLifecycle.get(id);
+    const soldReason = soldReasonById[id] ?? null;
+    const boost = effectiveBoost.get(id) ?? null;
 
-    setSelected((s) => {
-      if (!s) return s;
-      const next = { ...s };
-      if (typeof pub === "boolean" && pub !== s.isPublished) next.isPublished = pub;
-      if (life && life !== s.status) next.status = life;
-      if (soldReasonById[s.id] !== s.soldReason) next.soldReason = soldReasonById[s.id] ?? null;
-      return next;
+    setSelected((prev) => {
+        if (!prev) return prev;
+        if (prev.id !== id) return prev;
+
+        let changed = false;
+        const next = { ...prev };
+
+        if (typeof pub === "boolean" && pub !== prev.isPublished) {
+            next.isPublished = pub;
+            changed = true;
+        }
+
+        if (life && life !== prev.status) {
+            next.status = life;
+            changed = true;
+        }
+
+        const sr = soldReason ?? null;
+        if (sr !== (prev.soldReason ?? null)) {
+            next.soldReason = sr;
+            changed = true;
+        }
+
+        // ✅ boost sync (deep-compare via JSON; ok because boost is tiny)
+        const prevBoostJson = JSON.stringify((prev as any).boost ?? null);
+        const nextBoostJson = JSON.stringify(boost);
+        if (prevBoostJson !== nextBoostJson) {
+            (next as any).boost = boost;
+            changed = true;
+        }
+        return changed ? next : prev; // ✅ prevents infinite loop
     });
-  }, [effectivePublished, effectiveLifecycle, soldReasonById, selected]);
+
+  }, [selected?.id, effectivePublished, effectiveLifecycle, soldReasonById, effectiveBoost]);
 
   return (
     <div className="space-y-4">
-      {/* Toasts */}
-      <ToastStack
-        items={toasts}
-        onDismiss={(id) => setToasts((prev) => prev.filter((x) => x.id !== id))}
-      />
+      <ToastStack items={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((x) => x.id !== id))} />
 
       {/* Toolbar */}
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -340,9 +393,7 @@ export default function ListingsClient({
                 placeholder="Search by title, commune, kind, property type…"
                 className="w-full rounded-xl border bg-white px-3 py-2 pl-9 text-sm outline-none ring-0 focus:border-neutral-300"
               />
-              <span className="absolute left-3 top-2.5 text-sm text-neutral-400">
-                ⌕
-              </span>
+              <span className="absolute left-3 top-2.5 text-sm text-neutral-400">⌕</span>
             </div>
 
             <select
@@ -356,7 +407,6 @@ export default function ListingsClient({
               <option value="DRAFT">Draft</option>
             </select>
 
-            {/* ✅ lifecycle filter */}
             <select
               value={lifecycle}
               onChange={(e) => setLifecycle(e.target.value as any)}
@@ -396,10 +446,7 @@ export default function ListingsClient({
 
           <div className="flex items-center justify-between gap-2 md:justify-end">
             <div className="text-sm text-neutral-600">
-              <span className="font-medium text-neutral-900">
-                {filtered.length}
-              </span>{" "}
-              results
+              <span className="font-medium text-neutral-900">{filtered.length}</span> results
             </div>
 
             {canCreate ? (
@@ -426,8 +473,7 @@ export default function ListingsClient({
             </span>
             {q.trim() ? (
               <span className="rounded-full border bg-neutral-50 px-2 py-1">
-                Query:{" "}
-                <span className="font-medium text-neutral-900">“{q.trim()}”</span>
+                Query: <span className="font-medium text-neutral-900">“{q.trim()}”</span>
               </span>
             ) : null}
             <button
@@ -443,24 +489,20 @@ export default function ListingsClient({
 
       {/* List / empty states */}
       {filtered.length === 0 ? (
-        <ListingsEmptyState
-          canCreate={canCreate}
-          hasSearch={q.trim().length > 0}
-          status={status}
-          onClear={clearFilters}
-        />
+        <ListingsEmptyState canCreate={canCreate} hasSearch={q.trim().length > 0} status={status} onClear={clearFilters} />
       ) : (
         <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
           <div className="divide-y">
             {filtered.map((l) => {
               const effectivePub = effectivePublished.get(l.id) ?? Boolean(l.isPublished);
               const effectiveLife = (effectiveLifecycle.get(l.id) ?? l.status) as ListingLifecycle;
+              const effectiveBst = effectiveBoost.get(l.id) ?? l.boost ?? null;
               const busy = Boolean(loadingById[l.id]);
 
               return (
                 <ListingRow
                   key={l.id}
-                  row={{ ...l, isPublished: effectivePub, status: effectiveLife }}
+                  row={{ ...l, isPublished: effectivePub, status: effectiveLife, boost: effectiveBst }}
                   busy={busy}
                   onOpen={() =>
                     setSelected({
@@ -468,6 +510,7 @@ export default function ListingsClient({
                       isPublished: effectivePub,
                       status: effectiveLife,
                       soldReason: soldReasonById[l.id] ?? l.soldReason ?? null,
+                      boost: effectiveBst,
                     } as Row)
                   }
                 />
@@ -478,11 +521,7 @@ export default function ListingsClient({
       )}
 
       {/* Drawer */}
-      <PreviewDrawer
-        row={selected}
-        onClose={() => setSelected(null)}
-        publishState={publishState}
-      />
+      <PreviewDrawer row={selected} onClose={() => setSelected(null)} publishState={publishState} />
     </div>
   );
 }
@@ -498,6 +537,9 @@ function ListingRow({
 }) {
   const thumb = row.media?.[0]?.url ?? null;
   const leadCount = row._count?.leads ?? 0;
+
+  const boostActive = isBoostActive(row.boost);
+  const boostEnds = safeDate(row.boost?.endsAt);
 
   return (
     <div
@@ -545,6 +587,24 @@ function ListingRow({
                 <StatusPill published={row.isPublished} />
                 <LifecyclePill status={row.status} />
 
+                {/* ✅ boost pill */}
+                {boostActive && row.boost ? (
+                  <span
+                    className={[
+                      "rounded-full border px-2 py-0.5 text-xs font-semibold",
+                      boostPillTone(row.boost.level),
+                    ].join(" ")}
+                    title={boostEnds ? `Boost active until ${formatDate(boostEnds)}` : "Boost active"}
+                  >
+                    🔥 {row.boost.level}
+                    {boostEnds ? ` • until ${formatDate(boostEnds)}` : ""}
+                  </span>
+                ) : row.boost ? (
+                  <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-xs font-medium text-neutral-700">
+                    Boost ended
+                  </span>
+                ) : null}
+
                 {busy ? (
                   <span className="rounded-full border bg-white px-2 py-0.5 text-xs font-medium text-neutral-700">
                     Updating…
@@ -561,9 +621,7 @@ function ListingRow({
                 <span className="text-neutral-300">•</span>
                 <span>{row.sizeSqm} m²</span>
                 <span className="text-neutral-300">•</span>
-                <span className="uppercase text-xs tracking-wide text-neutral-500">
-                  {row.kind}
-                </span>
+                <span className="uppercase text-xs tracking-wide text-neutral-500">{row.kind}</span>
               </div>
 
               <div className="mt-1 text-xs text-neutral-500">
@@ -574,10 +632,7 @@ function ListingRow({
         </div>
 
         {/* Right actions */}
-        <div
-          className="flex items-center gap-2 md:justify-end"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="flex items-center gap-2 md:justify-end" onClick={(e) => e.stopPropagation()}>
           <Link
             href={busy ? "#" : `/agency/listings/${row.id}/edit`}
             aria-disabled={busy}
@@ -614,17 +669,13 @@ function ListingRow({
             }}
             className={[
               "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium",
-              leadCount > 0
-                ? "bg-neutral-900 text-white hover:bg-neutral-800"
-                : "border bg-white text-neutral-900 hover:bg-neutral-50",
+              leadCount > 0 ? "bg-neutral-900 text-white hover:bg-neutral-800" : "border bg-white text-neutral-900 hover:bg-neutral-50",
               busy ? "opacity-60 cursor-not-allowed" : "",
             ].join(" ")}
           >
             Leads
             {leadCount > 0 ? (
-              <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs tabular-nums">
-                {leadCount}
-              </span>
+              <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs tabular-nums">{leadCount}</span>
             ) : null}
           </Link>
         </div>
@@ -646,25 +697,16 @@ function PreviewDrawer({
   const leadCount = row?._count?.leads ?? 0;
   const thumb = row?.media?.[0]?.url ?? null;
 
-  const effectiveStatus =
-    row ? publishState.lifecycleById[row.id] ?? row.status : null;
+  const effectiveStatus = row ? publishState.lifecycleById[row.id] ?? row.status : null;
 
-  const currentSoldReason =
-    row ? publishState.soldReasonById[row.id] ?? row.soldReason ?? "" : "";
+  const currentSoldReason = row ? publishState.soldReasonById[row.id] ?? row.soldReason ?? "" : "";
+
+  const effectiveBoost = row ? publishState.boostById[row.id] ?? row.boost ?? null : null;
 
   return (
-    <div
-      className={[
-        "fixed inset-0 z-50",
-        open ? "pointer-events-auto" : "pointer-events-none",
-      ].join(" ")}
-      aria-hidden={!open}
-    >
+    <div className={["fixed inset-0 z-50", open ? "pointer-events-auto" : "pointer-events-none"].join(" ")} aria-hidden={!open}>
       <div
-        className={[
-          "absolute inset-0 bg-black/30 transition-opacity",
-          open ? "opacity-100" : "opacity-0",
-        ].join(" ")}
+        className={["absolute inset-0 bg-black/30 transition-opacity", open ? "opacity-100" : "opacity-0"].join(" ")}
         onClick={onClose}
       />
 
@@ -677,26 +719,27 @@ function PreviewDrawer({
         <div className="flex h-full flex-col">
           <div className="flex items-center justify-between border-b px-5 py-4">
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-neutral-900">
-                {row?.title ?? "Listing"}
-              </div>
+              <div className="truncate text-sm font-semibold text-neutral-900">{row?.title ?? "Listing"}</div>
               <div className="mt-1 flex items-center gap-2">
                 {row ? <StatusPill published={row.isPublished} /> : null}
-                {row && effectiveStatus ? (
-                  <LifecyclePill status={effectiveStatus as ListingLifecycle} />
+                {row && effectiveStatus ? <LifecyclePill status={effectiveStatus as ListingLifecycle} /> : null}
+                {effectiveBoost && isBoostActive(effectiveBoost) ? (
+                  <span
+                    className={[
+                      "rounded-full border px-2 py-0.5 text-xs font-semibold",
+                      boostPillTone(effectiveBoost.level),
+                    ].join(" ")}
+                  >
+                    🔥 {effectiveBoost.level}
+                  </span>
                 ) : null}
-                <span className="text-xs text-neutral-500">
-                  {row ? `Created ${formatDate(new Date(row.createdAt))}` : ""}
-                </span>
+                <span className="text-xs text-neutral-500">{row ? `Created ${formatDate(new Date(row.createdAt))}` : ""}</span>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
               {row ? <PublishToggle row={row} publishState={publishState} /> : null}
-              <button
-                onClick={onClose}
-                className="rounded-lg border bg-white px-3 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50"
-              >
+              <button onClick={onClose} className="rounded-lg border bg-white px-3 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50">
                 Close
               </button>
             </div>
@@ -709,16 +752,12 @@ function PreviewDrawer({
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={thumb} alt="" className="h-full w-full object-cover" />
                 ) : (
-                  <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">
-                    No photo
-                  </div>
+                  <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">No photo</div>
                 )}
               </div>
 
               <div className="p-4">
-                <div className="text-xl font-semibold text-neutral-900">
-                  {formatEUR(row?.price ?? null)}
-                </div>
+                <div className="text-xl font-semibold text-neutral-900">{formatEUR(row?.price ?? null)}</div>
 
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-neutral-700">
                   <span>{row?.commune ?? "—"}</span>
@@ -727,9 +766,7 @@ function PreviewDrawer({
                   <span className="text-neutral-300">•</span>
                   <span>{row?.sizeSqm ?? "—"} m²</span>
                   <span className="text-neutral-300">•</span>
-                  <span className="uppercase text-xs tracking-wide text-neutral-500">
-                    {row?.kind ?? ""}
-                  </span>
+                  <span className="uppercase text-xs tracking-wide text-neutral-500">{row?.kind ?? ""}</span>
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 gap-3">
@@ -739,13 +776,12 @@ function PreviewDrawer({
               </div>
             </div>
 
+            {/* ✅ Boost controls (NEW) */}
+            {row ? <BoostControls row={row} publishState={publishState} /> : null}
+
             {/* ✅ Lifecycle controls */}
             {row ? (
-              <LifecycleControls
-                row={row}
-                publishState={publishState}
-                currentSoldReason={currentSoldReason}
-              />
+              <LifecycleControls row={row} publishState={publishState} currentSoldReason={currentSoldReason} />
             ) : null}
           </div>
 
@@ -784,6 +820,165 @@ function PreviewDrawer({
   );
 }
 
+function BoostControls({ row, publishState }: { row: Row; publishState: PublishState }) {
+  const loading = Boolean(publishState.loadingById[row.id]);
+
+  const boost = publishState.boostById[row.id] ?? row.boost ?? null;
+  const active = isBoostActive(boost);
+  const ends = safeDate(boost?.endsAt);
+
+  const [level, setLevel] = useState<BoostLevel>((boost?.level ?? "BASIC") as BoostLevel);
+  const [days, setDays] = useState<number>(14);
+
+  useEffect(() => {
+    const current = (publishState.boostById[row.id] ?? row.boost ?? null) as Row["boost"];
+    setLevel(((current?.level ?? "BASIC") as BoostLevel) || "BASIC");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.id]);
+
+  async function apply() {
+    if (loading) return;
+
+    const prev = publishState.boostById[row.id] ?? row.boost ?? null;
+
+    publishState.setLoading(row.id, true);
+
+    // optimistic: set local boost with an estimated end date immediately
+    const now = new Date();
+    const optimisticEnds = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+    publishState.setBoost(row.id, { level, startsAt: now, endsAt: optimisticEnds });
+
+    try {
+      const data = await apiBoostApply(row.id, level, days);
+      const b = data?.boost;
+      if (!b) throw new Error("Boost response missing.");
+
+      publishState.setBoost(row.id, {
+        level: b.level as BoostLevel,
+        startsAt: b.startsAt,
+        endsAt: b.endsAt,
+      });
+
+      publishState.toast({
+        tone: "success",
+        title: "Boost applied",
+        message: `${level} boost active for ${days} days.`,
+      });
+    } catch (e: any) {
+      publishState.setBoost(row.id, prev);
+      publishState.toast({
+        tone: "error",
+        title: "Couldn’t apply boost",
+        message: e?.message ?? "We reverted the change. Please try again.",
+      });
+    } finally {
+      publishState.setLoading(row.id, false);
+    }
+  }
+
+  async function remove() {
+    if (loading) return;
+
+    const prev = publishState.boostById[row.id] ?? row.boost ?? null;
+
+    publishState.setLoading(row.id, true);
+    publishState.setBoost(row.id, null);
+
+    try {
+      await apiBoostRemove(row.id);
+
+      publishState.toast({
+        tone: "success",
+        title: "Boost removed",
+        message: "This listing is no longer promoted.",
+      });
+    } catch (e: any) {
+      publishState.setBoost(row.id, prev);
+      publishState.toast({
+        tone: "error",
+        title: "Couldn’t remove boost",
+        message: e?.message ?? "We reverted the change. Please try again.",
+      });
+    } finally {
+      publishState.setLoading(row.id, false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-neutral-900">Boost (Promoted)</div>
+          <p className="mt-1 text-sm text-neutral-600">
+            Boost increases visibility in Recommended and gives a small lift in search.
+          </p>
+        </div>
+
+        {active && boost ? (
+          <span className={["shrink-0 rounded-full border px-2 py-1 text-xs font-semibold", boostPillTone(boost.level)].join(" ")}>
+            🔥 {boost.level}
+            {ends ? ` • until ${formatDate(ends)}` : ""}
+          </span>
+        ) : boost ? (
+          <span className="shrink-0 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs font-medium text-neutral-700">
+            Boost ended
+          </span>
+        ) : (
+          <span className="shrink-0 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs font-medium text-neutral-700">
+            Not boosted
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        <label className="text-xs font-medium text-neutral-700">Level</label>
+        <select
+          value={level}
+          onChange={(e) => setLevel(e.target.value as BoostLevel)}
+          className="rounded-xl border bg-white px-3 py-2 text-sm"
+          disabled={loading}
+        >
+          <option value="BASIC">BASIC</option>
+          <option value="PREMIUM">PREMIUM</option>
+          <option value="PLATINUM">PLATINUM</option>
+        </select>
+
+        <label className="mt-2 text-xs font-medium text-neutral-700">Duration</label>
+        <select
+          value={String(days)}
+          onChange={(e) => setDays(Number(e.target.value))}
+          className="rounded-xl border bg-white px-3 py-2 text-sm"
+          disabled={loading}
+        >
+          <option value="7">7 days</option>
+          <option value="14">14 days</option>
+          <option value="30">30 days</option>
+        </select>
+
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={apply}
+            disabled={loading}
+            className="rounded-xl bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
+          >
+            {loading ? "Updating..." : "Apply boost"}
+          </button>
+
+          <button
+            type="button"
+            onClick={remove}
+            disabled={loading || !boost}
+            className="rounded-xl border bg-white px-3 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50 disabled:opacity-60"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LifecycleControls({
   row,
   publishState,
@@ -795,13 +990,11 @@ function LifecycleControls({
 }) {
   const loading = Boolean(publishState.loadingById[row.id]);
 
-  const current =
-    (publishState.lifecycleById[row.id] ?? row.status) as ListingLifecycle;
+  const current = (publishState.lifecycleById[row.id] ?? row.status) as ListingLifecycle;
 
   const [nextStatus, setNextStatus] = useState<ListingLifecycle>(current);
   const [reason, setReason] = useState<string>(currentSoldReason ?? "");
 
-  // keep local form synced when opening different rows
   useEffect(() => {
     setNextStatus((publishState.lifecycleById[row.id] ?? row.status) as ListingLifecycle);
     setReason((publishState.soldReasonById[row.id] ?? row.soldReason ?? "") as string);
@@ -814,7 +1007,6 @@ function LifecycleControls({
     const prevStatus = current;
     const prevReason = publishState.soldReasonById[row.id] ?? row.soldReason ?? null;
 
-    // optimistic
     publishState.setLoading(row.id, true);
     publishState.setLifecycle(row.id, nextStatus);
     publishState.setSoldReason(row.id, reason.trim() ? reason.trim() : null);
@@ -830,7 +1022,6 @@ function LifecycleControls({
       });
 
       if (!res.ok) {
-        // rollback
         publishState.setLifecycle(row.id, prevStatus);
         publishState.setSoldReason(row.id, prevReason);
 
@@ -882,9 +1073,7 @@ function LifecycleControls({
           <option value="ARCHIVED">ARCHIVED</option>
         </select>
 
-        <label className="mt-2 text-xs font-medium text-neutral-700">
-          Reason (optional)
-        </label>
+        <label className="mt-2 text-xs font-medium text-neutral-700">Reason (optional)</label>
         <input
           value={reason}
           onChange={(e) => setReason(e.target.value)}
@@ -906,26 +1095,15 @@ function LifecycleControls({
         </button>
       </div>
 
-      {/* Helpful timestamps (read-only, from row) */}
       <div className="mt-3 text-xs text-neutral-500">
-        {safeDate(row.soldAt) ? (
-          <div>Sold at: {safeDate(row.soldAt)!.toLocaleString("de-LU")}</div>
-        ) : null}
-        {safeDate(row.archivedAt) ? (
-          <div>Archived at: {safeDate(row.archivedAt)!.toLocaleString("de-LU")}</div>
-        ) : null}
+        {safeDate(row.soldAt) ? <div>Sold at: {safeDate(row.soldAt)!.toLocaleString("de-LU")}</div> : null}
+        {safeDate(row.archivedAt) ? <div>Archived at: {safeDate(row.archivedAt)!.toLocaleString("de-LU")}</div> : null}
       </div>
     </div>
   );
 }
 
-function PublishToggle({
-  row,
-  publishState,
-}: {
-  row: Row;
-  publishState: PublishState;
-}) {
+function PublishToggle({ row, publishState }: { row: Row; publishState: PublishState }) {
   const loading = Boolean(publishState.loadingById[row.id]);
 
   async function toggle() {
@@ -938,7 +1116,6 @@ function PublishToggle({
 
     const next = !current;
 
-    // optimistic UI
     publishState.setLoading(row.id, true);
     publishState.setPublished(row.id, next);
 
@@ -950,7 +1127,6 @@ function PublishToggle({
       });
 
       if (!res.ok) {
-        // rollback
         publishState.setPublished(row.id, current);
         publishState.toast({
           tone: "error",
@@ -990,9 +1166,7 @@ function PublishToggle({
       disabled={loading}
       className={[
         "rounded-xl px-3 py-2 text-xs font-medium transition disabled:opacity-60",
-        published
-          ? "bg-neutral-900 text-white hover:bg-neutral-800"
-          : "border bg-white text-neutral-900 hover:bg-neutral-50",
+        published ? "bg-neutral-900 text-white hover:bg-neutral-800" : "border bg-white text-neutral-900 hover:bg-neutral-50",
       ].join(" ")}
       title="Toggle publish status"
     >
@@ -1087,18 +1261,12 @@ function ListingsEmptyState({
         </button>
 
         {canCreate ? (
-          <Link
-            href="/agency/listings/new"
-            className="rounded-xl bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
-          >
+          <Link href="/agency/listings/new" className="rounded-xl bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800">
             New listing
           </Link>
         ) : null}
 
-        <Link
-          href="/agency/leads"
-          className="rounded-xl border bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50"
-        >
+        <Link href="/agency/leads" className="rounded-xl border bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-50">
           View leads
         </Link>
       </div>
@@ -1106,13 +1274,7 @@ function ListingsEmptyState({
   );
 }
 
-function ToastStack({
-  items,
-  onDismiss,
-}: {
-  items: ToastItem[];
-  onDismiss: (id: string) => void;
-}) {
+function ToastStack({ items, onDismiss }: { items: ToastItem[]; onDismiss: (id: string) => void }) {
   return (
     <div className="fixed right-4 top-4 z-[100] flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2">
       {items.map((t) => (
@@ -1120,11 +1282,7 @@ function ToastStack({
           key={t.id}
           className={[
             "rounded-2xl border bg-white p-4 shadow-lg",
-            t.tone === "success"
-              ? "border-green-200"
-              : t.tone === "error"
-              ? "border-red-200"
-              : "border-neutral-200",
+            t.tone === "success" ? "border-green-200" : t.tone === "error" ? "border-red-200" : "border-neutral-200",
           ].join(" ")}
           role="status"
           aria-live="polite"
@@ -1132,17 +1290,11 @@ function ToastStack({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span>
-                  {t.tone === "success" ? "✅" : t.tone === "error" ? "⚠️" : "ℹ️"}
-                </span>
-                <div className="truncate text-sm font-semibold text-neutral-900">
-                  {t.title}
-                </div>
+                <span>{t.tone === "success" ? "✅" : t.tone === "error" ? "⚠️" : "ℹ️"}</span>
+                <div className="truncate text-sm font-semibold text-neutral-900">{t.title}</div>
               </div>
 
-              {t.message ? (
-                <div className="mt-1 text-sm text-neutral-600">{t.message}</div>
-              ) : null}
+              {t.message ? <div className="mt-1 text-sm text-neutral-600">{t.message}</div> : null}
             </div>
 
             <button

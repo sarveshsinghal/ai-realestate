@@ -106,7 +106,6 @@ async function updateLeadStatus(formData: FormData) {
 
   revalidatePath("/agency");
   revalidatePath("/agency/leads");
-  if (listingId) revalidatePath("/agency/leads");
 }
 
 async function setLeadStatusQuick(formData: FormData) {
@@ -136,24 +135,28 @@ async function setLeadStatusQuick(formData: FormData) {
 
   revalidatePath("/agency");
   revalidatePath("/agency/leads");
-  if (listingId) revalidatePath("/agency/leads");
 }
 
 export default async function AgencyLeadsPage({
   searchParams,
 }: {
-  searchParams?: { status?: string; listingId?: string };
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const sp = await searchParams; // ✅ unwrap Promise
   const { agency } = await requireAgencyContext();
 
-  const status = normalizeStatus(searchParams?.status);
-  const listingId = (searchParams?.listingId ?? "").trim() || null;
+  const status = normalizeStatus(sp?.status);
 
-  const where = {
-    agencyId: agency.id,
-    ...(status !== "ALL" ? { status } : {}),
-    ...(listingId ? { listingId } : {}),
-  } as const;
+  const listingIdRaw = sp?.listingId;
+  const listingId =
+    typeof listingIdRaw === "string" && listingIdRaw.trim()
+      ? listingIdRaw.trim()
+      : null;
+
+  // ✅ One where object used everywhere (consistent list + counts)
+  const where: any = { agencyId: agency.id };
+  if (status !== "ALL") where.status = status;
+  if (listingId) where.listingId = listingId;
 
   const [leads, grouped] = await Promise.all([
     prisma.lead.findMany({
@@ -173,7 +176,7 @@ export default async function AgencyLeadsPage({
     }),
     prisma.lead.groupBy({
       by: ["status"],
-      where: { agencyId: agency.id, ...(listingId ? { listingId } : {}) },
+      where, // ✅ consistent with list filters
       _count: { _all: true },
     }),
   ]);
@@ -198,12 +201,11 @@ export default async function AgencyLeadsPage({
   const baseHref = listingId
     ? `/agency/leads?listingId=${encodeURIComponent(listingId)}`
     : "/agency/leads";
+
   const hrefForStatus = (s: LeadStatus | "ALL") =>
     s === "ALL"
       ? baseHref
-      : `${baseHref}${baseHref.includes("?") ? "&" : "?"}status=${encodeURIComponent(
-          s
-        )}`;
+      : `${baseHref}${baseHref.includes("?") ? "&" : "?"}status=${encodeURIComponent(s)}`;
 
   return (
     <main className="min-h-screen bg-background">
@@ -370,9 +372,7 @@ export default async function AgencyLeadsPage({
                           </a>
                           {l.phone ? (
                             <>
-                              <span className="mx-2 text-muted-foreground/40">
-                                •
-                              </span>
+                              <span className="mx-2 text-muted-foreground/40">•</span>
                               <a
                                 className="underline underline-offset-4"
                                 href={`tel:${l.phone}`}
@@ -439,11 +439,7 @@ export default async function AgencyLeadsPage({
                           {/* Inline update (auto-submit via client component) */}
                           <form action={updateLeadStatus} className="flex flex-col gap-2">
                             <input type="hidden" name="id" value={l.id} />
-                            <input
-                              type="hidden"
-                              name="listingId"
-                              value={l.listingId ?? ""}
-                            />
+                            <input type="hidden" name="listingId" value={l.listingId ?? ""} />
 
                             <AutoSubmitSelect
                               name="status"
@@ -463,16 +459,8 @@ export default async function AgencyLeadsPage({
                           <div className="flex flex-wrap gap-2 pt-1">
                             <form action={setLeadStatusQuick}>
                               <input type="hidden" name="id" value={l.id} />
-                              <input
-                                type="hidden"
-                                name="listingId"
-                                value={l.listingId ?? ""}
-                              />
-                              <input
-                                type="hidden"
-                                name="status"
-                                value="CONTACTED"
-                              />
+                              <input type="hidden" name="listingId" value={l.listingId ?? ""} />
+                              <input type="hidden" name="status" value="CONTACTED" />
                               <button
                                 type="submit"
                                 className="rounded-xl border bg-card px-3 py-1.5 text-[11px] font-medium hover:bg-accent"
@@ -483,16 +471,8 @@ export default async function AgencyLeadsPage({
 
                             <form action={setLeadStatusQuick}>
                               <input type="hidden" name="id" value={l.id} />
-                              <input
-                                type="hidden"
-                                name="listingId"
-                                value={l.listingId ?? ""}
-                              />
-                              <input
-                                type="hidden"
-                                name="status"
-                                value="QUALIFIED"
-                              />
+                              <input type="hidden" name="listingId" value={l.listingId ?? ""} />
+                              <input type="hidden" name="status" value="QUALIFIED" />
                               <button
                                 type="submit"
                                 className="rounded-xl border bg-card px-3 py-1.5 text-[11px] font-medium hover:bg-accent"
@@ -503,11 +483,7 @@ export default async function AgencyLeadsPage({
 
                             <form action={setLeadStatusQuick}>
                               <input type="hidden" name="id" value={l.id} />
-                              <input
-                                type="hidden"
-                                name="listingId"
-                                value={l.listingId ?? ""}
-                              />
+                              <input type="hidden" name="listingId" value={l.listingId ?? ""} />
                               <input type="hidden" name="status" value="LOST" />
                               <button
                                 type="submit"
